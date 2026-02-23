@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:cave.cs.columbia.edu)",
+      "WebFetch(domain:history.siggraph.org)",
+      "WebFetch(domain:www.cs.columbia.edu)",
+      "Bash(git -C /c/Users/johnh/Documents/microfracture log --oneline -5)"
+    ]
+  }
+}
