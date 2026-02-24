@@ -83,6 +83,15 @@ RES_Y         = 720
 # --- Scene objects ---
 CUBE_NAME     = "Cube"
 
+# --- Glass block dimensions (mm) ---
+# Physical size of your glass block. The script resizes the Blender
+# cube to match these at startup.  Set any to None to skip resizing
+# and use the existing cube geometry as-is.
+BLOCK_X_MM    = 50.0       # Width  (X axis)
+BLOCK_Y_MM    = 50.0       # Height (Y axis)
+BLOCK_Z_MM    = 80.0       # Depth  (Z axis)
+BLOCK_UNIT_SCALE = 0.001   # mm → Blender scene units (0.001 = meters)
+
 # --- Which patterns to generate ---
 GENERATE_FOV_RULER  = True
 GENERATE_ALIGNMENT  = True
@@ -125,7 +134,7 @@ GRID_DOT_RADIUS_PX = 2
 # -------------------------------------------------------------------
 # GLASS / OPTICS
 # -------------------------------------------------------------------
-INNER_CUBE_SCALE = 0.8
+SAFE_ZONE_MARGIN = 0.90    # Inner 90% of block on each axis (avoids edge damage)
 IOR_OUTSIDE      = 1.00
 IOR_INSIDE       = 1.50
 RAY_MAX_DIST     = 100000.0
@@ -317,9 +326,14 @@ def build_ray_tracer(scene, camera, cube):
     cube_mat_inv = cube_mat.inverted()
     normal_mat = cube_mat_inv.transposed().to_3x3()
 
-    s = INNER_CUBE_SCALE
-    box_min = Vector((-s, -s, -s))
-    box_max = Vector((s, s, s))
+    # Compute safe zone from actual mesh bounding box (handles non-cubic blocks)
+    local_bb = [Vector(corner) for corner in cube.bound_box]
+    bb_min = Vector((min(v[i] for v in local_bb) for i in range(3)))
+    bb_max = Vector((max(v[i] for v in local_bb) for i in range(3)))
+    center = (bb_min + bb_max) * 0.5
+    half = (bb_max - bb_min) * 0.5
+    box_min = center - half * SAFE_ZONE_MARGIN
+    box_max = center + half * SAFE_ZONE_MARGIN
 
     cam_origin, tl, tr, bl, br = get_camera_vectors(scene, camera)
 
@@ -657,6 +671,20 @@ def generate_calibration():
     if not cam or not cube:
         return print("ERROR: Need active Camera + object named "
                      f"'{CUBE_NAME}' in scene.")
+
+    # Apply block dimensions to the Blender cube if specified
+    if BLOCK_X_MM is not None and BLOCK_Y_MM is not None and BLOCK_Z_MM is not None:
+        s = BLOCK_UNIT_SCALE
+        cube.dimensions = Vector((BLOCK_X_MM * s, BLOCK_Y_MM * s, BLOCK_Z_MM * s))
+        bpy.context.view_layer.update()
+        print(f"Glass block: {BLOCK_X_MM} x {BLOCK_Y_MM} x {BLOCK_Z_MM} mm")
+    else:
+        dims = cube.dimensions
+        print(f"Glass block: using existing cube "
+              f"({dims.x/BLOCK_UNIT_SCALE:.1f} x "
+              f"{dims.y/BLOCK_UNIT_SCALE:.1f} x "
+              f"{dims.z/BLOCK_UNIT_SCALE:.1f} mm)")
+    print(f"Safe zone: inner {SAFE_ZONE_MARGIN*100:.0f}% on each axis")
 
     cam_hfov = get_camera_hfov(scene, cam)
     cam_vfov = get_camera_vfov(scene, cam)
