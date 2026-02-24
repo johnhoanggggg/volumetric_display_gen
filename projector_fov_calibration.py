@@ -131,6 +131,11 @@ GRID_COLS          = 8
 GRID_ROWS          = 5
 GRID_DOT_RADIUS_PX = 2
 
+# Wireframe box border
+BORDER_DEPTH_FRONT = 0.1   # Front face depth factor
+BORDER_DEPTH_BACK  = 0.9   # Back face depth factor
+BORDER_DEPTH_STEPS = 60    # Points per depth-direction edge
+
 # -------------------------------------------------------------------
 # GLASS / OPTICS
 # -------------------------------------------------------------------
@@ -483,30 +488,42 @@ def generate_fov_ruler(trace):
     print(f"H ruler: {HFOV_MIN_DEG}-{HFOV_MAX_DEG} deg | "
           f"V ruler: {VFOV_MIN_DEG}-{VFOV_MAX_DEG} deg")
 
+    # Check if ruler range fits within the glass angular extent.
+    # For small blocks: print the measurable range and required distance.
+    dims = cube.dimensions
     if HFOV_MAX_DEG > glass_hfov:
-        print(f"\n  ** GLASS TOO NARROW for H ruler! **")
-        print(f"  Glass covers {glass_hfov:.1f} deg but ruler goes to "
-              f"{HFOV_MAX_DEG} deg.")
-        print(f"  Ticks above ~{glass_hfov:.1f} deg will be MISSING.")
-        # Compute max camera distance for the ruler to work
-        dims = cube.dimensions
         half_w = dims.x / 2.0
-        need_half_angle = math.radians(HFOV_MAX_DEG / 2.0)
-        max_dist = half_w / math.tan(need_half_angle)
-        print(f"  Fix: move camera within {max_dist/BLOCK_UNIT_SCALE:.0f}mm "
-              f"of glass, or increase BLOCK_X_MM.")
+        need_dist_min = half_w / math.tan(math.radians(HFOV_MIN_DEG / 2.0))
+        need_dist_max = half_w / math.tan(math.radians(HFOV_MAX_DEG / 2.0))
+        if glass_hfov >= HFOV_MIN_DEG:
+            print(f"\n  GLASS TOO NARROW for full H range.")
+            print(f"  Measurable: {HFOV_MIN_DEG}-{glass_hfov:.1f} deg "
+                  f"(ticks above {glass_hfov:.1f} deg will be missing)")
+        else:
+            print(f"\n  GLASS TOO NARROW — no H ruler ticks possible!")
+            print(f"  Glass covers {glass_hfov:.1f} deg but ruler starts "
+                  f"at {HFOV_MIN_DEG} deg.")
+        print(f"  For full range ({HFOV_MIN_DEG}-{HFOV_MAX_DEG} deg): "
+              f"move camera within {need_dist_max/BLOCK_UNIT_SCALE:.0f}mm")
+        print(f"  For min tick ({HFOV_MIN_DEG} deg): "
+              f"move camera within {need_dist_min/BLOCK_UNIT_SCALE:.0f}mm")
 
     if VFOV_MAX_DEG > glass_vfov:
-        print(f"\n  ** GLASS TOO SHORT for V ruler! **")
-        print(f"  Glass covers {glass_vfov:.1f} deg but ruler goes to "
-              f"{VFOV_MAX_DEG} deg.")
-        print(f"  Ticks above ~{glass_vfov:.1f} deg will be MISSING.")
-        dims = cube.dimensions
         half_h = dims.y / 2.0
-        need_half_angle = math.radians(VFOV_MAX_DEG / 2.0)
-        max_dist = half_h / math.tan(need_half_angle)
-        print(f"  Fix: move camera within {max_dist/BLOCK_UNIT_SCALE:.0f}mm "
-              f"of glass, or increase BLOCK_Y_MM.")
+        need_dist_min = half_h / math.tan(math.radians(VFOV_MIN_DEG / 2.0))
+        need_dist_max = half_h / math.tan(math.radians(VFOV_MAX_DEG / 2.0))
+        if glass_vfov >= VFOV_MIN_DEG:
+            print(f"\n  GLASS TOO SHORT for full V range.")
+            print(f"  Measurable: {VFOV_MIN_DEG}-{glass_vfov:.1f} deg "
+                  f"(ticks above {glass_vfov:.1f} deg will be missing)")
+        else:
+            print(f"\n  GLASS TOO SHORT — no V ruler ticks possible!")
+            print(f"  Glass covers {glass_vfov:.1f} deg but ruler starts "
+                  f"at {VFOV_MIN_DEG} deg.")
+        print(f"  For full range ({VFOV_MIN_DEG}-{VFOV_MAX_DEG} deg): "
+              f"move camera within {need_dist_max/BLOCK_UNIT_SCALE:.0f}mm")
+        print(f"  For min tick ({VFOV_MIN_DEG} deg): "
+              f"move camera within {need_dist_min/BLOCK_UNIT_SCALE:.0f}mm")
 
     points = []
     y_center = RES_Y // 2
@@ -666,26 +683,51 @@ def generate_alignment_pattern(trace):
         if pt:
             points.append(pt)
 
-    # === 4. BORDER FRAME (depth-interpolated) ===
-    # Top=front, bottom=back, sides interpolate linearly.
-    for x in range(x_min, x_max + 1):
-        pt = trace(x, y_min, 0.1)
-        if pt:
-            border_points.append(pt)
-    for x in range(x_min, x_max + 1):
-        pt = trace(x, y_max, 0.9)
-        if pt:
-            border_points.append(pt)
-    for y in range(y_min, y_max + 1):
-        depth = 0.1 + 0.8 * ((y - y_min) / max(1, y_max - y_min))
-        pt = trace(x_min, y, depth)
-        if pt:
-            border_points.append(pt)
-    for y in range(y_min, y_max + 1):
-        depth = 0.1 + 0.8 * ((y - y_min) / max(1, y_max - y_min))
-        pt = trace(x_max, y, depth)
-        if pt:
-            border_points.append(pt)
+    # === 4. WIREFRAME BOX BORDER ===
+    # 12-edge closed box: front rect + back rect + 4 depth lines at corners.
+    df = BORDER_DEPTH_FRONT
+    db = BORDER_DEPTH_BACK
+
+    # Front face rectangle (4 edges)
+    for x in range(x_min, x_max + 1):       # Top, front
+        pt = trace(x, y_min, df)
+        if pt: border_points.append(pt)
+    for x in range(x_min, x_max + 1):       # Bottom, front
+        pt = trace(x, y_max, df)
+        if pt: border_points.append(pt)
+    for y in range(y_min, y_max + 1):        # Left, front
+        pt = trace(x_min, y, df)
+        if pt: border_points.append(pt)
+    for y in range(y_min, y_max + 1):        # Right, front
+        pt = trace(x_max, y, df)
+        if pt: border_points.append(pt)
+
+    # Back face rectangle (4 edges)
+    for x in range(x_min, x_max + 1):       # Top, back
+        pt = trace(x, y_min, db)
+        if pt: border_points.append(pt)
+    for x in range(x_min, x_max + 1):       # Bottom, back
+        pt = trace(x, y_max, db)
+        if pt: border_points.append(pt)
+    for y in range(y_min, y_max + 1):        # Left, back
+        pt = trace(x_min, y, db)
+        if pt: border_points.append(pt)
+    for y in range(y_min, y_max + 1):        # Right, back
+        pt = trace(x_max, y, db)
+        if pt: border_points.append(pt)
+
+    # Depth lines at 4 corners (connecting front face to back face)
+    corner_pixels = [
+        (x_min, y_min),  # Top-left
+        (x_max, y_min),  # Top-right
+        (x_min, y_max),  # Bottom-left
+        (x_max, y_max),  # Bottom-right
+    ]
+    for cpx, cpy in corner_pixels:
+        for i in range(BORDER_DEPTH_STEPS + 1):
+            d = df + (db - df) * (i / BORDER_DEPTH_STEPS)
+            pt = trace(cpx, cpy, d)
+            if pt: border_points.append(pt)
 
     # === 5. SPARSE ALIGNMENT GRID ===
     # Interior dots for catching distortion or local misalignment.
