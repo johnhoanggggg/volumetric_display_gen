@@ -15,36 +15,35 @@ from mathutils.bvhtree import BVHTree
 # -------------------------------------------------------------------
 # PART 1: FOV RULER
 #
+#   Two modes controlled by CALIB_WINDOW_FRACTION:
+#
+#   FULL FRAME (CALIB_WINDOW_FRACTION = 1.0):
+#     Project full-white 1280x720. Ticks are at the projector's cone
+#     edge. Glass must be large enough to intercept edge rays.
+#
+#   WINDOWED (CALIB_WINDOW_FRACTION < 1.0, e.g. 0.3):
+#     Project a generated calibration PNG (white rectangle on black).
+#     The IMAGE edge creates the lit/dark boundary — not the projector
+#     cone. Works with any block size at any distance.
+#     The script generates the PNG automatically.
+#
+#   Both modes: tick labels are real HFOV/VFOV values. Read them the
+#   same way — find the last glowing tick, that's your FOV.
+#
 #   SETUP: Set Blender camera FOV WIDER than the projector's max
 #   possible FOV. If you think HFOV is 37.5-39.1, set camera to ~42 deg.
-#   This ensures all ruler ticks fall within the camera's view.
 #
-#   The script etches vertical tick marks at angular positions
-#   corresponding to HFOV values 37.0-39.5 in 0.1 deg steps.
-#   Ticks are mirrored on both sides of the optical center.
-#
-#   READING: Project full-white 1280x720 through the glass.
-#   Ticks inside the projector's cone glow. Outside = dark.
-#   The last glowing tick = your FOV.
-#
-#   TICK HEIGHT ENCODING (no counting needed — just read the pattern):
-#
-#     .0 (whole degree) : 40px tall  — tallest, unmistakable landmark
-#     .5 (half degree)  : 28px tall  — clear mid-point marker
-#     other tenths      : 14px tall  — short ticks between landmarks
+#   TICK HEIGHT ENCODING:
+#     .0 (whole degree) : 40px tall  — tallest landmark
+#     .5 (half degree)  : 28px tall  — mid-point marker
+#     other tenths      : 14px tall  — short ticks
 #
 #     .0   .1  .2  .3  .4  .5   .6  .7  .8  .9  next .0
 #     TALL  s   s   s   s  MED   s   s   s   s   TALL
 #
-#   You only ever count max 4 short ticks from the nearest landmark.
-#   Example: last lit tick is 2 short ticks past a TALL tick → x.2 deg.
+#   Max 4 short ticks from any landmark. Last lit = 2 past TALL → x.2.
 #
-#   Horizontal ticks are vertical lines at the Y midline.
-#   Vertical ticks are horizontal lines at the X midline.
-#   A center crosshair confirms the optical axis.
-#
-#   The AnyBeam's laser scanning gives very crisp edge cutoff
-#   (no vignetting like LCD/DLP), so the lit/dark boundary is sharp.
+#   AnyBeam laser scanning gives crisp edge cutoff (no vignetting).
 #
 # -------------------------------------------------------------------
 # PART 2: ALIGNMENT PATTERN
@@ -62,11 +61,17 @@ from mathutils.bvhtree import BVHTree
 # -------------------------------------------------------------------
 # WORKFLOW:
 #   1. Set Blender camera to ~42 deg HFOV (wider than projector)
-#   2. Run with GENERATE_FOV_RULER=True, GENERATE_ALIGNMENT=False
-#   3. Etch → project white → read last glowing tick
-#   4. Set Blender camera to measured FOV (e.g. 37.6 deg)
-#   5. Run with GENERATE_FOV_RULER=False, GENERATE_ALIGNMENT=True
-#   6. Etch → align projector using test images
+#   2. Set CALIB_WINDOW_FRACTION:
+#        Large block (covers full projection) → 1.0
+#        Small block (cheaper) → 0.3 to 0.5
+#   3. Run with GENERATE_FOV_RULER=True, GENERATE_ALIGNMENT=False
+#   4. Etch the DXF into glass
+#   5. If windowed: project the generated CalibrationImage.png
+#      If full frame: project full white 1280x720
+#   6. Read the last glowing tick → that is your HFOV/VFOV
+#   7. Set Blender camera to measured FOV (e.g. 37.6 deg)
+#   8. Run with GENERATE_FOV_RULER=False, GENERATE_ALIGNMENT=True
+#   9. Etch → align projector using test images
 #
 # ===================================================================
 
@@ -107,6 +112,17 @@ HFOV_STEP_DEG = 0.1
 VFOV_MIN_DEG  = 20.0
 VFOV_MAX_DEG  = 23.0
 VFOV_STEP_DEG = 0.1
+
+# Calibration window — fraction of the projector frame to illuminate.
+# Set to 1.0 to use the original full-frame technique (project white,
+# read the last glowing tick at the projector's cone edge).
+# Set < 1.0 for small blocks — the script generates a calibration PNG
+# with a white rectangle of this fraction of the frame. The illumination
+# edge is created by the IMAGE, not the projector's cone, so it works
+# at any distance with any block size.
+# Tick labels are real HFOV/VFOV values — read them exactly the same way.
+CALIB_WINDOW_FRACTION = 1.0        # 1.0 = full frame, 0.5 = center 50%
+CALIB_IMAGE_PATH = "C:/Users/johnh/Downloads/CalibrationImage.png"
 
 # Tick heights — the visual hierarchy
 TICK_HEIGHT_WHOLE = 40    # .0 degrees (tallest landmark)
@@ -391,22 +407,32 @@ def build_ray_tracer(scene, camera, cube):
 # -------------------------------------------------------------------
 # FOV-TO-PIXEL CONVERSION
 # -------------------------------------------------------------------
-def hfov_to_pixel_x(hfov_deg, camera_hfov_deg):
-    """For a projector with hfov_deg, its rightmost pixel lands at this
-    pixel column in the Blender camera's pixel space.
+def hfov_to_pixel_x(hfov_deg, camera_hfov_deg, window_px=None):
+    """Pixel column in camera space where the measurement edge falls.
 
-    pixel = center + (RES_X/2) * tan(hfov/2) / tan(cam_hfov/2)
+    Full frame (window_px=RES_X): edge of projector's cone for HFOV hfov_deg.
+    Windowed (window_px<RES_X): edge of calibration window for HFOV hfov_deg.
+
+    The window edge half-angle for a projector with HFOV F and a
+    centered window of W pixels is: atan(tan(F/2) * W / RES_X).
+    When W=RES_X this simplifies to F/2 (original formula).
     """
+    if window_px is None:
+        window_px = RES_X
     half_angle = math.radians(hfov_deg / 2.0)
+    edge_half = math.atan(math.tan(half_angle) * window_px / RES_X)
     cam_half = math.radians(camera_hfov_deg / 2.0)
-    pixel_offset = (math.tan(half_angle) / math.tan(cam_half)) * (RES_X / 2.0)
+    pixel_offset = (math.tan(edge_half) / math.tan(cam_half)) * (RES_X / 2.0)
     return RES_X / 2.0 + pixel_offset
 
-def vfov_to_pixel_y(vfov_deg, camera_vfov_deg):
+def vfov_to_pixel_y(vfov_deg, camera_vfov_deg, window_py=None):
     """Same as hfov_to_pixel_x but vertical."""
+    if window_py is None:
+        window_py = RES_Y
     half_angle = math.radians(vfov_deg / 2.0)
+    edge_half = math.atan(math.tan(half_angle) * window_py / RES_Y)
     cam_half = math.radians(camera_vfov_deg / 2.0)
-    pixel_offset = (math.tan(half_angle) / math.tan(cam_half)) * (RES_Y / 2.0)
+    pixel_offset = (math.tan(edge_half) / math.tan(cam_half)) * (RES_Y / 2.0)
     return RES_Y / 2.0 + pixel_offset
 
 # -------------------------------------------------------------------
@@ -435,6 +461,42 @@ def get_glass_angular_extent(camera, cube):
     vfov = math.degrees(2.0 * math.atan(max_vtan)) if max_vtan > 0 else 0.0
     return hfov, vfov, min_depth
 
+def generate_calibration_image(filepath, window_x, window_y):
+    """Generate a calibration PNG: centered white rectangle on black.
+
+    The sharp edges of the white rectangle create the lit/dark boundary
+    for reading the FOV ruler. The projector displays this image instead
+    of full white.
+    """
+    name = "FOV_CalibImage"
+    img = bpy.data.images.get(name)
+    if img:
+        bpy.data.images.remove(img)
+    img = bpy.data.images.new(name, RES_X, RES_Y, alpha=False)
+
+    # Build pixel buffer (RGBA, bottom-to-top row order in Blender)
+    pixels = [0.0, 0.0, 0.0, 1.0] * (RES_X * RES_Y)
+
+    x_start = (RES_X - window_x) // 2
+    x_end = x_start + window_x
+    y_start = (RES_Y - window_y) // 2
+    y_end = y_start + window_y
+
+    for y in range(y_start, y_end):
+        for x in range(x_start, x_end):
+            idx = (y * RES_X + x) * 4
+            pixels[idx]     = 1.0  # R
+            pixels[idx + 1] = 1.0  # G
+            pixels[idx + 2] = 1.0  # B
+
+    img.pixels = pixels
+    img.filepath_raw = filepath
+    img.file_format = 'PNG'
+    img.save()
+    bpy.data.images.remove(img)
+    print(f"Calibration image saved: {filepath}")
+    print(f"  White window: {window_x}x{window_y} centered in {RES_X}x{RES_Y}")
+
 def get_tick_height(fov_rounded):
     """Tick height based on sub-degree value.
 
@@ -455,75 +517,87 @@ def get_tick_height(fov_rounded):
 def generate_fov_ruler(trace):
     """Generate height-encoded tick marks for FOV measurement.
 
-    Each tick is a single-pixel-wide vertical line (for HFOV) or
-    horizontal line (for VFOV), placed at the angular position where
-    a projector with that FOV would have its edge pixel.
+    Supports two modes controlled by CALIB_WINDOW_FRACTION:
 
-    All ticks at glass midpoint depth (depth_factor=0.5).
+    Full frame (1.0): Ticks at positions where the projector's cone
+    edge falls. Project full white, read the last glowing tick.
+
+    Windowed (<1.0): Ticks at positions where the calibration window
+    edge falls. Project the generated calibration PNG, read the last
+    glowing tick. Works with any block size at any distance.
+
+    Both modes: tick labels are real HFOV/VFOV values, read them
+    the same way. Height encodes the tenths digit.
     """
     scene = bpy.context.scene
     cam = scene.camera
     cam_hfov = get_camera_hfov(scene, cam)
     cam_vfov = get_camera_vfov(scene, cam)
 
-    # Validate camera is wide enough for the ruler range
-    max_h_pixel = hfov_to_pixel_x(HFOV_MAX_DEG, cam_hfov)
-    max_v_pixel = vfov_to_pixel_y(VFOV_MAX_DEG, cam_vfov)
-    if max_h_pixel >= RES_X:
-        print(f"WARNING: Camera HFOV ({cam_hfov:.1f} deg) too narrow!")
-        print(f"  Ruler max {HFOV_MAX_DEG} deg needs pixel {max_h_pixel:.0f}, "
-              f"but camera only has {RES_X}px.")
-        print(f"  Increase Blender camera FOV or decrease HFOV_MAX_DEG.")
-    if max_v_pixel >= RES_Y:
-        print(f"WARNING: Camera VFOV ({cam_vfov:.1f} deg) too narrow!")
-        print(f"  Ruler max {VFOV_MAX_DEG} deg needs pixel {max_v_pixel:.0f}, "
-              f"but camera only has {RES_Y}px.")
+    wf = CALIB_WINDOW_FRACTION
+    win_px = int(round(RES_X * wf))
+    win_py = int(round(RES_Y * wf))
+    windowed = wf < 1.0
 
-    # Validate glass block is wide/tall enough to intercept ruler rays
+    if windowed:
+        print(f"Window mode: {win_px}x{win_py} px "
+              f"({wf*100:.0f}% of {RES_X}x{RES_Y})")
+    else:
+        print("Full-frame mode")
+
+    # Validate camera is wide enough for the tick positions
+    max_h_pixel = hfov_to_pixel_x(HFOV_MAX_DEG, cam_hfov, win_px)
+    max_v_pixel = vfov_to_pixel_y(VFOV_MAX_DEG, cam_vfov, win_py)
+    if max_h_pixel >= RES_X:
+        print(f"WARNING: Camera HFOV ({cam_hfov:.1f} deg) too narrow "
+              f"for H ruler max pixel {max_h_pixel:.0f}")
+    if max_v_pixel >= RES_Y:
+        print(f"WARNING: Camera VFOV ({cam_vfov:.1f} deg) too narrow "
+              f"for V ruler max pixel {max_v_pixel:.0f}")
+
+    # Validate glass subtends enough angle for the tick positions
     cube = bpy.data.objects.get(CUBE_NAME)
     glass_hfov, glass_vfov, glass_dist = get_glass_angular_extent(cam, cube)
     print(f"Camera: HFOV={cam_hfov:.2f} deg, VFOV={cam_vfov:.2f} deg")
     print(f"Glass subtends {glass_hfov:.1f} x {glass_vfov:.1f} deg "
-          f"from camera ({glass_dist/BLOCK_UNIT_SCALE:.1f}mm away)")
-    print(f"H ruler: {HFOV_MIN_DEG}-{HFOV_MAX_DEG} deg | "
-          f"V ruler: {VFOV_MIN_DEG}-{VFOV_MAX_DEG} deg")
+          f"({glass_dist/BLOCK_UNIT_SCALE:.1f}mm away)")
 
-    # Check if ruler range fits within the glass angular extent.
-    # For small blocks: print the measurable range and required distance.
-    dims = cube.dimensions
-    if HFOV_MAX_DEG > glass_hfov:
-        half_w = dims.x / 2.0
-        need_dist_min = half_w / math.tan(math.radians(HFOV_MIN_DEG / 2.0))
-        need_dist_max = half_w / math.tan(math.radians(HFOV_MAX_DEG / 2.0))
-        if glass_hfov >= HFOV_MIN_DEG:
-            print(f"\n  GLASS TOO NARROW for full H range.")
-            print(f"  Measurable: {HFOV_MIN_DEG}-{glass_hfov:.1f} deg "
-                  f"(ticks above {glass_hfov:.1f} deg will be missing)")
-        else:
-            print(f"\n  GLASS TOO NARROW — no H ruler ticks possible!")
-            print(f"  Glass covers {glass_hfov:.1f} deg but ruler starts "
-                  f"at {HFOV_MIN_DEG} deg.")
-        print(f"  For full range ({HFOV_MIN_DEG}-{HFOV_MAX_DEG} deg): "
-              f"move camera within {need_dist_max/BLOCK_UNIT_SCALE:.0f}mm")
-        print(f"  For min tick ({HFOV_MIN_DEG} deg): "
-              f"move camera within {need_dist_min/BLOCK_UNIT_SCALE:.0f}mm")
+    # Compute the max angular extent needed for ticks
+    h_edge_max = math.degrees(2.0 * math.atan(
+        math.tan(math.radians(HFOV_MAX_DEG / 2.0)) * win_px / RES_X))
+    v_edge_max = math.degrees(2.0 * math.atan(
+        math.tan(math.radians(VFOV_MAX_DEG / 2.0)) * win_py / RES_Y))
+    print(f"Ticks span: H={h_edge_max:.1f} deg, V={v_edge_max:.1f} deg "
+          f"(window-adjusted)")
+    print(f"Ruler: HFOV {HFOV_MIN_DEG}-{HFOV_MAX_DEG} deg | "
+          f"VFOV {VFOV_MIN_DEG}-{VFOV_MAX_DEG} deg")
 
-    if VFOV_MAX_DEG > glass_vfov:
-        half_h = dims.y / 2.0
-        need_dist_min = half_h / math.tan(math.radians(VFOV_MIN_DEG / 2.0))
-        need_dist_max = half_h / math.tan(math.radians(VFOV_MAX_DEG / 2.0))
-        if glass_vfov >= VFOV_MIN_DEG:
-            print(f"\n  GLASS TOO SHORT for full V range.")
-            print(f"  Measurable: {VFOV_MIN_DEG}-{glass_vfov:.1f} deg "
-                  f"(ticks above {glass_vfov:.1f} deg will be missing)")
+    if h_edge_max > glass_hfov:
+        print(f"\n  H ticks need {h_edge_max:.1f} deg but glass covers "
+              f"{glass_hfov:.1f} deg.")
+        if windowed:
+            # Suggest a smaller window fraction
+            safe_frac = glass_hfov / HFOV_MAX_DEG
+            print(f"  Try CALIB_WINDOW_FRACTION = {safe_frac:.2f} or smaller")
         else:
-            print(f"\n  GLASS TOO SHORT — no V ruler ticks possible!")
-            print(f"  Glass covers {glass_vfov:.1f} deg but ruler starts "
-                  f"at {VFOV_MIN_DEG} deg.")
-        print(f"  For full range ({VFOV_MIN_DEG}-{VFOV_MAX_DEG} deg): "
-              f"move camera within {need_dist_max/BLOCK_UNIT_SCALE:.0f}mm")
-        print(f"  For min tick ({VFOV_MIN_DEG} deg): "
-              f"move camera within {need_dist_min/BLOCK_UNIT_SCALE:.0f}mm")
+            dims = cube.dimensions
+            half_w = dims.x / 2.0
+            need_dist = half_w / math.tan(math.radians(HFOV_MAX_DEG / 2.0))
+            print(f"  Move camera within {need_dist/BLOCK_UNIT_SCALE:.0f}mm, "
+                  f"or use CALIB_WINDOW_FRACTION < 1.0")
+
+    if v_edge_max > glass_vfov:
+        print(f"\n  V ticks need {v_edge_max:.1f} deg but glass covers "
+              f"{glass_vfov:.1f} deg.")
+        if windowed:
+            safe_frac = glass_vfov / VFOV_MAX_DEG
+            print(f"  Try CALIB_WINDOW_FRACTION = {safe_frac:.2f} or smaller")
+        else:
+            dims = cube.dimensions
+            half_h = dims.y / 2.0
+            need_dist = half_h / math.tan(math.radians(VFOV_MAX_DEG / 2.0))
+            print(f"  Move camera within {need_dist/BLOCK_UNIT_SCALE:.0f}mm, "
+                  f"or use CALIB_WINDOW_FRACTION < 1.0")
 
     points = []
     y_center = RES_Y // 2
@@ -536,7 +610,7 @@ def generate_fov_ruler(trace):
         tick_h = get_tick_height(fov_rounded)
         half_h = tick_h // 2
 
-        px_right = hfov_to_pixel_x(fov_rounded, cam_hfov)
+        px_right = hfov_to_pixel_x(fov_rounded, cam_hfov, win_px)
         px_left = RES_X - px_right  # Mirror
 
         y_start = max(0, y_center - half_h)
@@ -564,10 +638,10 @@ def generate_fov_ruler(trace):
     fov = VFOV_MIN_DEG
     while fov <= VFOV_MAX_DEG + 0.001:
         fov_rounded = round(fov, 1)
-        tick_w = get_tick_height(fov_rounded)  # Same height hierarchy
+        tick_w = get_tick_height(fov_rounded)
         half_w = tick_w // 2
 
-        py_bottom = vfov_to_pixel_y(fov_rounded, cam_vfov)
+        py_bottom = vfov_to_pixel_y(fov_rounded, cam_vfov, win_py)
         py_top = RES_Y - py_bottom  # Mirror
 
         x_start = max(0, x_center - half_w)
@@ -795,6 +869,17 @@ def generate_calibration():
         create_obj_from_points(FOV_RULER_NAME, ruler_pts,
                                color=(0.0, 1.0, 0.0, 1.0))
         all_points.extend(ruler_pts)
+
+        # Generate calibration image for window mode
+        if CALIB_WINDOW_FRACTION < 1.0:
+            win_px = int(round(RES_X * CALIB_WINDOW_FRACTION))
+            win_py = int(round(RES_Y * CALIB_WINDOW_FRACTION))
+            generate_calibration_image(CALIB_IMAGE_PATH, win_px, win_py)
+            print(f"\n  PROJECT THIS IMAGE (not full white): {CALIB_IMAGE_PATH}")
+            print(f"  Read the last glowing tick → that IS your HFOV/VFOV.")
+        else:
+            print("\n  Project a full-white 1280x720 image.")
+            print("  Read the last glowing tick → that IS your HFOV/VFOV.")
 
     if GENERATE_ALIGNMENT:
         print("\n--- Part 2: Alignment Pattern ---")
