@@ -407,6 +407,29 @@ def vfov_to_pixel_y(vfov_deg, camera_vfov_deg):
 # -------------------------------------------------------------------
 # PART 1: FOV MEASUREMENT RULER
 # -------------------------------------------------------------------
+def get_glass_angular_extent(camera, cube):
+    """Compute the full H and V FOV the glass block subtends from the camera.
+
+    Returns (hfov_deg, vfov_deg, nearest_face_dist).
+    In camera space: -Z = forward, X = right, Y = up.
+    """
+    cam_inv = camera.matrix_world.inverted()
+    bb_cam = [cam_inv @ (cube.matrix_world @ Vector(c)) for c in cube.bound_box]
+
+    max_htan = 0.0
+    max_vtan = 0.0
+    min_depth = float('inf')
+    for v in bb_cam:
+        depth = -v.z
+        if depth > 0.001:
+            max_htan = max(max_htan, abs(v.x) / depth)
+            max_vtan = max(max_vtan, abs(v.y) / depth)
+            min_depth = min(min_depth, depth)
+
+    hfov = math.degrees(2.0 * math.atan(max_htan)) if max_htan > 0 else 0.0
+    vfov = math.degrees(2.0 * math.atan(max_vtan)) if max_vtan > 0 else 0.0
+    return hfov, vfov, min_depth
+
 def get_tick_height(fov_rounded):
     """Tick height based on sub-degree value.
 
@@ -451,9 +474,39 @@ def generate_fov_ruler(trace):
         print(f"  Ruler max {VFOV_MAX_DEG} deg needs pixel {max_v_pixel:.0f}, "
               f"but camera only has {RES_Y}px.")
 
+    # Validate glass block is wide/tall enough to intercept ruler rays
+    cube = bpy.data.objects.get(CUBE_NAME)
+    glass_hfov, glass_vfov, glass_dist = get_glass_angular_extent(cam, cube)
     print(f"Camera: HFOV={cam_hfov:.2f} deg, VFOV={cam_vfov:.2f} deg")
+    print(f"Glass subtends {glass_hfov:.1f} x {glass_vfov:.1f} deg "
+          f"from camera ({glass_dist/BLOCK_UNIT_SCALE:.1f}mm away)")
     print(f"H ruler: {HFOV_MIN_DEG}-{HFOV_MAX_DEG} deg | "
           f"V ruler: {VFOV_MIN_DEG}-{VFOV_MAX_DEG} deg")
+
+    if HFOV_MAX_DEG > glass_hfov:
+        print(f"\n  ** GLASS TOO NARROW for H ruler! **")
+        print(f"  Glass covers {glass_hfov:.1f} deg but ruler goes to "
+              f"{HFOV_MAX_DEG} deg.")
+        print(f"  Ticks above ~{glass_hfov:.1f} deg will be MISSING.")
+        # Compute max camera distance for the ruler to work
+        dims = cube.dimensions
+        half_w = dims.x / 2.0
+        need_half_angle = math.radians(HFOV_MAX_DEG / 2.0)
+        max_dist = half_w / math.tan(need_half_angle)
+        print(f"  Fix: move camera within {max_dist/BLOCK_UNIT_SCALE:.0f}mm "
+              f"of glass, or increase BLOCK_X_MM.")
+
+    if VFOV_MAX_DEG > glass_vfov:
+        print(f"\n  ** GLASS TOO SHORT for V ruler! **")
+        print(f"  Glass covers {glass_vfov:.1f} deg but ruler goes to "
+              f"{VFOV_MAX_DEG} deg.")
+        print(f"  Ticks above ~{glass_vfov:.1f} deg will be MISSING.")
+        dims = cube.dimensions
+        half_h = dims.y / 2.0
+        need_half_angle = math.radians(VFOV_MAX_DEG / 2.0)
+        max_dist = half_h / math.tan(need_half_angle)
+        print(f"  Fix: move camera within {max_dist/BLOCK_UNIT_SCALE:.0f}mm "
+              f"of glass, or increase BLOCK_Y_MM.")
 
     points = []
     y_center = RES_Y // 2
