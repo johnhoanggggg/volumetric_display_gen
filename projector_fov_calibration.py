@@ -6,67 +6,67 @@ from mathutils.bvhtree import BVHTree
 # ===================================================================
 # PROJECTOR FOV CALIBRATION & ALIGNMENT SCRIPT
 # ===================================================================
+# For Nebra AnyBeam 720p laser scanning projector
 #
-# PURPOSE:
-#   1. FOV MEASUREMENT — Determine the exact horizontal and vertical
-#      FOV of a 720p projector to the nearest 0.1 degrees.
-#   2. POSE ALIGNMENT — Given a known FOV (default 37.6 deg horizontal),
-#      generate calibration points inside the glass block so you can
-#      physically align the projector on an optical mount to match the
-#      Blender camera pose exactly.
+# TWO-PART TOOL:
+#   Part 1 — FOV RULER: Measures projector HFOV/VFOV to 0.1 deg.
+#   Part 2 — ALIGNMENT PATTERN: Aligns projector pose to Blender camera.
 #
-# HOW THE FOV MEASUREMENT WORKS:
-#   The script etches a "ruler" of vertical tick marks into the glass.
-#   Each tick corresponds to a specific horizontal FOV value (37.0 to
-#   39.5 in 0.1-degree steps). When you project a full-white 1280x720
-#   image through the glass:
-#     - Ticks inside the projected area will glow (they receive light)
-#     - Ticks outside the projected area stay dark (no light reaches them)
-#   The last glowing tick on each side tells you the FOV. For example,
-#   if ticks up to "38.2" glow but "38.3" is dark, your HFOV is 38.2°.
+# -------------------------------------------------------------------
+# PART 1: FOV RULER
 #
-#   The same logic applies vertically — horizontal tick marks are etched
-#   at positions corresponding to vertical FOV values derived from the
-#   16:9 aspect ratio.
+#   SETUP: Set Blender camera FOV WIDER than the projector's max
+#   possible FOV. If you think HFOV is 37.5-39.1, set camera to ~42 deg.
+#   This ensures all ruler ticks fall within the camera's view.
 #
-#   Tick marks are grouped by whole-degree values. Within each degree,
-#   the number of dashes in the tick encodes the tenth:
-#     - 1 dash = x.0°,  2 dashes = x.1°, ... 10 dashes = x.9°
-#   A longer "major" tick is placed at each whole degree boundary.
+#   The script etches vertical tick marks at angular positions
+#   corresponding to HFOV values 37.0-39.5 in 0.1 deg steps.
+#   Ticks are mirrored on both sides of the optical center.
 #
-# HOW THE ALIGNMENT CALIBRATION WORKS:
-#   Assuming HFOV = 37.6° (configurable), the script generates a test
-#   pattern of fracture points designed for 6-DOF alignment:
+#   READING: Project full-white 1280x720 through the glass.
+#   Ticks inside the projector's cone glow. Outside = dark.
+#   The last glowing tick = your FOV.
 #
-#   1. CORNER DOTS — Filled circles at all 4 corners of the projection.
-#      When correctly aligned, projector pixels at corners should light
-#      up exactly these dots and no others.
+#   TICK HEIGHT ENCODING (no counting needed — just read the pattern):
 #
-#   2. CENTER CROSSHAIR — Vertical and horizontal lines through the
-#      exact center of the projection. Aligning these to the physical
-#      center pixel of the projector confirms pointing direction.
+#     .0 (whole degree) : 40px tall  — tallest, unmistakable landmark
+#     .5 (half degree)  : 28px tall  — clear mid-point marker
+#     other tenths      : 14px tall  — short ticks between landmarks
 #
-#   3. EDGE MIDPOINT MARKERS — Small tick marks at the midpoint of
-#      each edge. These help verify there's no rotation (roll) — all
-#      four midpoints should light up symmetrically.
+#     .0   .1  .2  .3  .4  .5   .6  .7  .8  .9  next .0
+#     TALL  s   s   s   s  MED   s   s   s   s   TALL
 #
-#   4. BORDER FRAME — Full rectangular border at the projection edges.
-#      The border uses depth interpolation (top=front of glass,
-#      bottom=back of glass) so it's also useful for verifying the
-#      projector's vertical angle and distance.
+#   You only ever count max 4 short ticks from the nearest landmark.
+#   Example: last lit tick is 2 short ticks past a TALL tick → x.2 deg.
 #
-# USAGE:
-#   1. Open Blender with a scene containing:
-#      - A camera (the projector viewpoint)
-#      - A cube named "Cube" (the glass block)
-#   2. Set the Blender camera's horizontal FOV to the midpoint of your
-#      expected range (e.g., 38.0°) for the FOV measurement pass.
-#   3. Run this script — it generates point clouds and exports DXF.
-#   4. Laser-etch the DXF into glass.
-#   5. Project a full-white image and read off which ticks glow.
-#   6. For alignment: update ALIGN_HFOV_DEG to your measured FOV,
-#      set the Blender camera to match, and re-run with
-#      GENERATE_FOV_RULER = False, GENERATE_ALIGNMENT = True.
+#   Horizontal ticks are vertical lines at the Y midline.
+#   Vertical ticks are horizontal lines at the X midline.
+#   A center crosshair confirms the optical axis.
+#
+#   The AnyBeam's laser scanning gives very crisp edge cutoff
+#   (no vignetting like LCD/DLP), so the lit/dark boundary is sharp.
+#
+# -------------------------------------------------------------------
+# PART 2: ALIGNMENT PATTERN
+#
+#   SETUP: Set Blender camera FOV = your measured projector FOV.
+#   Now each projector pixel maps 1:1 to an angular position.
+#
+#   FEATURES:
+#     Corner dots    — Verify X/Y position + FOV. Top=front, bottom=back.
+#     Center cross   — Verify pointing direction (yaw + pitch).
+#     Edge midpoints — Verify no roll. All 4 should be symmetric.
+#     Border frame   — Depth-interpolated. Verify distance + tilt.
+#     Sparse grid    — Interior dots. Catch distortion or local error.
+#
+# -------------------------------------------------------------------
+# WORKFLOW:
+#   1. Set Blender camera to ~42 deg HFOV (wider than projector)
+#   2. Run with GENERATE_FOV_RULER=True, GENERATE_ALIGNMENT=False
+#   3. Etch → project white → read last glowing tick
+#   4. Set Blender camera to measured FOV (e.g. 37.6 deg)
+#   5. Run with GENERATE_FOV_RULER=False, GENERATE_ALIGNMENT=True
+#   6. Etch → align projector using test images
 #
 # ===================================================================
 
@@ -76,52 +76,64 @@ from mathutils.bvhtree import BVHTree
 EXPORT_PATH   = "C:/Users/johnh/Downloads/CalibrationOutput.dxf"
 DO_EXPORT     = True
 
-# --- Projector specs ---
+# --- Nebra AnyBeam 720p specs ---
 RES_X         = 1280
 RES_Y         = 720
 
 # --- Scene objects ---
 CUBE_NAME     = "Cube"
 
-# --- Which calibration patterns to generate ---
-GENERATE_FOV_RULER  = True     # Part 1: FOV measurement ticks
-GENERATE_ALIGNMENT  = True     # Part 2: Pose alignment pattern
+# --- Which patterns to generate ---
+GENERATE_FOV_RULER  = True
+GENERATE_ALIGNMENT  = True
 
-# --- FOV ruler settings ---
-# Range of horizontal FOV values to mark (degrees)
+# -------------------------------------------------------------------
+# FOV RULER CONFIG
+# -------------------------------------------------------------------
 HFOV_MIN_DEG  = 37.0
 HFOV_MAX_DEG  = 39.5
 HFOV_STEP_DEG = 0.1
-# Tick mark dimensions (in pixels at the projector's native resolution)
-TICK_LENGTH_MAJOR = 30   # Whole-degree tick height in pixels
-TICK_LENGTH_MINOR = 15   # Sub-degree tick height in pixels
-TICK_GAP          = 4    # Pixels between multi-dash ticks
-TICK_Y_CENTER     = RES_Y // 2  # Vertical center for horizontal ruler
 
-# Vertical FOV ruler (derived from HFOV via 16:9 aspect)
+# Vertical FOV range (16:9: HFOV 37.6 → VFOV ~21.7)
 VFOV_MIN_DEG  = 20.0
 VFOV_MAX_DEG  = 23.0
 VFOV_STEP_DEG = 0.1
-VTICK_LENGTH_MAJOR = 30
-VTICK_LENGTH_MINOR = 15
-VTICK_GAP          = 4
-VTICK_X_CENTER     = RES_X // 2  # Horizontal center for vertical ruler
 
-# --- Alignment settings (Part 2) ---
-ALIGN_HFOV_DEG     = 37.6       # Assumed horizontal FOV for alignment
-CORNER_RADIUS_PX   = 5          # Filled circle radius at corners
-CROSSHAIR_LEN_PX   = 40         # Half-length of center crosshair arms
-EDGE_TICK_LEN_PX   = 10         # Edge midpoint tick length
-ALIGNMENT_INSET_PX = 2          # Pixels inset from true edge for border
+# Tick heights — the visual hierarchy
+TICK_HEIGHT_WHOLE = 40    # .0 degrees (tallest landmark)
+TICK_HEIGHT_HALF  = 28    # .5 degrees (mid landmark)
+TICK_HEIGHT_TENTH = 14    # other tenths (short)
 
-# --- Glass / optics ---
+# Center reference crosshair half-arm length
+CENTER_CROSS_LEN  = 25
+
+# -------------------------------------------------------------------
+# ALIGNMENT PATTERN CONFIG
+# -------------------------------------------------------------------
+ALIGN_HFOV_DEG     = 37.6
+CORNER_RADIUS_PX   = 5
+CROSSHAIR_LEN_PX   = 40
+EDGE_TICK_LEN_PX   = 15
+ALIGNMENT_INSET_PX = 2
+
+# Interior alignment grid
+GRID_ENABLED       = True
+GRID_COLS          = 8
+GRID_ROWS          = 5
+GRID_DOT_RADIUS_PX = 2
+
+# -------------------------------------------------------------------
+# GLASS / OPTICS
+# -------------------------------------------------------------------
 INNER_CUBE_SCALE = 0.8
 IOR_OUTSIDE      = 1.00
 IOR_INSIDE       = 1.50
 RAY_MAX_DIST     = 100000.0
 POINT_RADIUS     = 0.00005
 
-# --- Output object names ---
+# -------------------------------------------------------------------
+# OUTPUT OBJECT NAMES
+# -------------------------------------------------------------------
 FOV_RULER_NAME     = "FOV_Ruler"
 ALIGNMENT_NAME     = "AlignmentPattern"
 ALIGN_BORDER_NAME  = "AlignmentBorder"
@@ -259,14 +271,41 @@ def get_camera_vectors(scene, camera):
             bot_set[0][1], bot_set[1][1])
 
 # -------------------------------------------------------------------
+# CAMERA FOV
+# -------------------------------------------------------------------
+def get_camera_hfov(scene, camera):
+    render = scene.render
+    sensor_fit = camera.data.sensor_fit
+    focal_length = camera.data.lens
+    aspect_x = render.resolution_x * render.pixel_aspect_x
+    aspect_y = render.resolution_y * render.pixel_aspect_y
+    if sensor_fit == 'HORIZONTAL' or (sensor_fit == 'AUTO' and aspect_x >= aspect_y):
+        sensor_width = camera.data.sensor_width
+    else:
+        sensor_width = camera.data.sensor_height * (aspect_x / aspect_y)
+    return math.degrees(2.0 * math.atan(sensor_width / (2.0 * focal_length)))
+
+def get_camera_vfov(scene, camera):
+    render = scene.render
+    sensor_fit = camera.data.sensor_fit
+    focal_length = camera.data.lens
+    aspect_x = render.resolution_x * render.pixel_aspect_x
+    aspect_y = render.resolution_y * render.pixel_aspect_y
+    if sensor_fit == 'VERTICAL' or (sensor_fit == 'AUTO' and aspect_y > aspect_x):
+        sensor_height = camera.data.sensor_height
+    else:
+        sensor_height = camera.data.sensor_width * (aspect_y / aspect_x)
+    return math.degrees(2.0 * math.atan(sensor_height / (2.0 * focal_length)))
+
+# -------------------------------------------------------------------
 # CORE RAY PIPELINE
 # -------------------------------------------------------------------
 def build_ray_tracer(scene, camera, cube):
-    """Returns a trace function: trace(pix_x, pix_y) -> world point or None.
+    """Returns trace(pix_x, pix_y, depth_factor) -> world point or None.
 
-    pix_x, pix_y are in the projector's native pixel coordinates
-    (0..RES_X-1, 0..RES_Y-1). The returned point is placed at the
-    midpoint depth of the inner safe zone along the refracted ray.
+    Traces ray from camera through pixel (pix_x, pix_y) at 1280x720,
+    refracts at glass surface, returns point at depth_factor (0=front,
+    1=back) within the inner safe zone.
     """
     for poly in cube.data.polygons:
         poly.use_smooth = False
@@ -285,9 +324,6 @@ def build_ray_tracer(scene, camera, cube):
     cam_origin, tl, tr, bl, br = get_camera_vectors(scene, camera)
 
     def trace(pix_x, pix_y, depth_factor=0.5):
-        """Trace a ray for pixel (pix_x, pix_y) and return the world-space
-        point at the given depth_factor (0.0=front, 1.0=back) within the
-        inner safe zone. Returns None if the ray misses."""
         u = (pix_x + 0.5) / RES_X
         v = (pix_y + 0.5) / RES_Y
 
@@ -334,21 +370,13 @@ def build_ray_tracer(scene, camera, cube):
     return trace
 
 # -------------------------------------------------------------------
-# PART 1: FOV MEASUREMENT RULER
+# FOV-TO-PIXEL CONVERSION
 # -------------------------------------------------------------------
 def hfov_to_pixel_x(hfov_deg, camera_hfov_deg):
-    """Convert a horizontal FOV angle to the pixel column where the
-    projection edge would fall if the projector had that FOV.
+    """For a projector with hfov_deg, its rightmost pixel lands at this
+    pixel column in the Blender camera's pixel space.
 
-    The center of the sensor is pixel RES_X/2. The full angular width
-    of the Blender camera spans RES_X pixels. A projector with a
-    *different* FOV would have its edge pixels at different angular
-    positions. We compute where the given hfov_deg boundary falls
-    in the Blender camera's pixel space.
-
-    half_angle = hfov_deg / 2 is the angle from center to edge.
-    The Blender camera's half-angle = camera_hfov_deg / 2.
-    Pixel offset from center = (tan(half_angle) / tan(cam_half)) * (RES_X/2)
+    pixel = center + (RES_X/2) * tan(hfov/2) / tan(cam_hfov/2)
     """
     half_angle = math.radians(hfov_deg / 2.0)
     cam_half = math.radians(camera_hfov_deg / 2.0)
@@ -356,209 +384,173 @@ def hfov_to_pixel_x(hfov_deg, camera_hfov_deg):
     return RES_X / 2.0 + pixel_offset
 
 def vfov_to_pixel_y(vfov_deg, camera_vfov_deg):
-    """Same as above but for vertical FOV and pixel rows."""
+    """Same as hfov_to_pixel_x but vertical."""
     half_angle = math.radians(vfov_deg / 2.0)
     cam_half = math.radians(camera_vfov_deg / 2.0)
     pixel_offset = (math.tan(half_angle) / math.tan(cam_half)) * (RES_Y / 2.0)
     return RES_Y / 2.0 + pixel_offset
 
-def get_camera_hfov(scene, camera):
-    """Get the Blender camera's horizontal FOV in degrees."""
-    render = scene.render
-    sensor_fit = camera.data.sensor_fit
-    focal_length = camera.data.lens
+# -------------------------------------------------------------------
+# PART 1: FOV MEASUREMENT RULER
+# -------------------------------------------------------------------
+def get_tick_height(fov_rounded):
+    """Tick height based on sub-degree value.
 
-    aspect_x = render.resolution_x * render.pixel_aspect_x
-    aspect_y = render.resolution_y * render.pixel_aspect_y
+    .0 → TICK_HEIGHT_WHOLE (40px) — tallest landmark
+    .5 → TICK_HEIGHT_HALF  (28px) — mid landmark
+    else → TICK_HEIGHT_TENTH (14px) — short
 
-    if sensor_fit == 'HORIZONTAL' or (sensor_fit == 'AUTO' and aspect_x >= aspect_y):
-        sensor_width = camera.data.sensor_width
+    Between any two landmarks there are max 4 short ticks.
+    """
+    tenths = round((fov_rounded - int(fov_rounded)) * 10) % 10
+    if tenths == 0:
+        return TICK_HEIGHT_WHOLE
+    elif tenths == 5:
+        return TICK_HEIGHT_HALF
     else:
-        sensor_width = camera.data.sensor_height * (aspect_x / aspect_y)
-
-    hfov_rad = 2.0 * math.atan(sensor_width / (2.0 * focal_length))
-    return math.degrees(hfov_rad)
-
-def get_camera_vfov(scene, camera):
-    """Get the Blender camera's vertical FOV in degrees."""
-    render = scene.render
-    sensor_fit = camera.data.sensor_fit
-    focal_length = camera.data.lens
-
-    aspect_x = render.resolution_x * render.pixel_aspect_x
-    aspect_y = render.resolution_y * render.pixel_aspect_y
-
-    if sensor_fit == 'VERTICAL' or (sensor_fit == 'AUTO' and aspect_y > aspect_x):
-        sensor_height = camera.data.sensor_height
-    else:
-        sensor_height = camera.data.sensor_width * (aspect_y / aspect_x)
-
-    vfov_rad = 2.0 * math.atan(sensor_height / (2.0 * focal_length))
-    return math.degrees(vfov_rad)
+        return TICK_HEIGHT_TENTH
 
 def generate_fov_ruler(trace):
-    """Generate tick marks for FOV measurement.
+    """Generate height-encoded tick marks for FOV measurement.
 
-    HORIZONTAL RULER: Vertical tick marks along the horizontal center,
-    placed at pixel columns corresponding to each FOV value.
-    Each tick is on the RIGHT side of the projection (positive offset
-    from center). The LEFT side is symmetric, so measuring one side
-    gives the full FOV.
+    Each tick is a single-pixel-wide vertical line (for HFOV) or
+    horizontal line (for VFOV), placed at the angular position where
+    a projector with that FOV would have its edge pixel.
 
-    Encoding: For each 0.1° step, we draw N small dashes where N
-    encodes the tenths digit (1 dash = x.0°, 2 = x.1°, ..., 10 = x.9°).
-    Whole-degree boundaries get a longer major tick below the dashes.
-
-    VERTICAL RULER: Same concept but horizontal ticks along the
-    vertical center, on the BOTTOM side.
+    All ticks at glass midpoint depth (depth_factor=0.5).
     """
     scene = bpy.context.scene
     cam = scene.camera
     cam_hfov = get_camera_hfov(scene, cam)
     cam_vfov = get_camera_vfov(scene, cam)
 
-    print(f"Blender camera HFOV: {cam_hfov:.2f}°, VFOV: {cam_vfov:.2f}°")
-    print(f"FOV ruler range: H={HFOV_MIN_DEG}°-{HFOV_MAX_DEG}°, "
-          f"V={VFOV_MIN_DEG}°-{VFOV_MAX_DEG}°")
+    # Validate camera is wide enough for the ruler range
+    max_h_pixel = hfov_to_pixel_x(HFOV_MAX_DEG, cam_hfov)
+    max_v_pixel = vfov_to_pixel_y(VFOV_MAX_DEG, cam_vfov)
+    if max_h_pixel >= RES_X:
+        print(f"WARNING: Camera HFOV ({cam_hfov:.1f} deg) too narrow!")
+        print(f"  Ruler max {HFOV_MAX_DEG} deg needs pixel {max_h_pixel:.0f}, "
+              f"but camera only has {RES_X}px.")
+        print(f"  Increase Blender camera FOV or decrease HFOV_MAX_DEG.")
+    if max_v_pixel >= RES_Y:
+        print(f"WARNING: Camera VFOV ({cam_vfov:.1f} deg) too narrow!")
+        print(f"  Ruler max {VFOV_MAX_DEG} deg needs pixel {max_v_pixel:.0f}, "
+              f"but camera only has {RES_Y}px.")
+
+    print(f"Camera: HFOV={cam_hfov:.2f} deg, VFOV={cam_vfov:.2f} deg")
+    print(f"H ruler: {HFOV_MIN_DEG}-{HFOV_MAX_DEG} deg | "
+          f"V ruler: {VFOV_MIN_DEG}-{VFOV_MAX_DEG} deg")
 
     points = []
+    y_center = RES_Y // 2
+    x_center = RES_X // 2
 
-    # --- Horizontal FOV ruler (vertical ticks on the right side) ---
+    # === HORIZONTAL FOV RULER (vertical ticks at Y midline) ===
     fov = HFOV_MIN_DEG
     while fov <= HFOV_MAX_DEG + 0.001:
         fov_rounded = round(fov, 1)
+        tick_h = get_tick_height(fov_rounded)
+        half_h = tick_h // 2
+
         px_right = hfov_to_pixel_x(fov_rounded, cam_hfov)
-        px_left = RES_X - px_right  # Mirror on left side
+        px_left = RES_X - px_right  # Mirror
 
-        whole = int(fov_rounded)
-        tenths = round((fov_rounded - whole) * 10)
-        is_whole = (tenths == 0)
+        y_start = max(0, y_center - half_h)
+        y_end = min(RES_Y - 1, y_center + half_h)
 
-        # Number of dashes encodes the tenths digit
-        # 0 tenths -> 1 dash (but it's the major tick), 1 tenth -> 1 dash, etc.
-        num_dashes = tenths if tenths > 0 else 1
-
-        # Major tick at whole degrees
-        if is_whole:
-            tick_h = TICK_LENGTH_MAJOR
-        else:
-            tick_h = TICK_LENGTH_MINOR
-
-        # Draw dashes on the RIGHT side
-        for d in range(num_dashes):
-            dash_x = int(round(px_right)) + d * TICK_GAP
-            if dash_x < 0 or dash_x >= RES_X:
-                continue
-            y_start = TICK_Y_CENTER - tick_h // 2
-            y_end = TICK_Y_CENTER + tick_h // 2
-            for y in range(max(0, y_start), min(RES_Y, y_end + 1)):
-                pt = trace(dash_x, y)
+        # Right-side tick
+        ix_r = int(round(px_right))
+        if 0 <= ix_r < RES_X:
+            for y in range(y_start, y_end + 1):
+                pt = trace(ix_r, y)
                 if pt:
                     points.append(pt)
 
-        # Mirror: draw dashes on the LEFT side
-        for d in range(num_dashes):
-            dash_x = int(round(px_left)) - d * TICK_GAP
-            if dash_x < 0 or dash_x >= RES_X:
-                continue
-            y_start = TICK_Y_CENTER - tick_h // 2
-            y_end = TICK_Y_CENTER + tick_h // 2
-            for y in range(max(0, y_start), min(RES_Y, y_end + 1)):
-                pt = trace(dash_x, y)
+        # Left-side tick (mirror)
+        ix_l = int(round(px_left))
+        if 0 <= ix_l < RES_X:
+            for y in range(y_start, y_end + 1):
+                pt = trace(ix_l, y)
                 if pt:
                     points.append(pt)
 
-        fov += HFOV_STEP_DEG
-        fov = round(fov, 1)
+        fov = round(fov + HFOV_STEP_DEG, 1)
 
-    # --- Vertical FOV ruler (horizontal ticks on the bottom side) ---
+    # === VERTICAL FOV RULER (horizontal ticks at X midline) ===
     fov = VFOV_MIN_DEG
     while fov <= VFOV_MAX_DEG + 0.001:
         fov_rounded = round(fov, 1)
+        tick_w = get_tick_height(fov_rounded)  # Same height hierarchy
+        half_w = tick_w // 2
+
         py_bottom = vfov_to_pixel_y(fov_rounded, cam_vfov)
-        py_top = RES_Y - py_bottom  # Mirror on top side
+        py_top = RES_Y - py_bottom  # Mirror
 
-        whole = int(fov_rounded)
-        tenths = round((fov_rounded - whole) * 10)
-        is_whole = (tenths == 0)
+        x_start = max(0, x_center - half_w)
+        x_end = min(RES_X - 1, x_center + half_w)
 
-        num_dashes = tenths if tenths > 0 else 1
-
-        if is_whole:
-            tick_w = VTICK_LENGTH_MAJOR
-        else:
-            tick_w = VTICK_LENGTH_MINOR
-
-        # Draw dashes on the BOTTOM side
-        for d in range(num_dashes):
-            dash_y = int(round(py_bottom)) + d * VTICK_GAP
-            if dash_y < 0 or dash_y >= RES_Y:
-                continue
-            x_start = VTICK_X_CENTER - tick_w // 2
-            x_end = VTICK_X_CENTER + tick_w // 2
-            for x in range(max(0, x_start), min(RES_X, x_end + 1)):
-                pt = trace(x, dash_y)
+        # Bottom-side tick
+        iy_b = int(round(py_bottom))
+        if 0 <= iy_b < RES_Y:
+            for x in range(x_start, x_end + 1):
+                pt = trace(x, iy_b)
                 if pt:
                     points.append(pt)
 
-        # Mirror: draw dashes on the TOP side
-        for d in range(num_dashes):
-            dash_y = int(round(py_top)) - d * VTICK_GAP
-            if dash_y < 0 or dash_y >= RES_Y:
-                continue
-            x_start = VTICK_X_CENTER - tick_w // 2
-            x_end = VTICK_X_CENTER + tick_w // 2
-            for x in range(max(0, x_start), min(RES_X, x_end + 1)):
-                pt = trace(x, dash_y)
+        # Top-side tick (mirror)
+        iy_t = int(round(py_top))
+        if 0 <= iy_t < RES_Y:
+            for x in range(x_start, x_end + 1):
+                pt = trace(x, iy_t)
                 if pt:
                     points.append(pt)
 
-        fov += VFOV_STEP_DEG
-        fov = round(fov, 1)
+        fov = round(fov + VFOV_STEP_DEG, 1)
 
-    # --- Center reference line (always visible, confirms center) ---
-    # Short vertical line at exact center
-    cx, cy = RES_X // 2, RES_Y // 2
-    for y in range(cy - 20, cy + 21):
-        pt = trace(cx, y)
-        if pt:
-            points.append(pt)
-    # Short horizontal line at exact center
-    for x in range(cx - 20, cx + 21):
-        pt = trace(x, cy)
-        if pt:
-            points.append(pt)
+    # === CENTER REFERENCE CROSSHAIR ===
+    for y in range(y_center - CENTER_CROSS_LEN, y_center + CENTER_CROSS_LEN + 1):
+        if 0 <= y < RES_Y:
+            pt = trace(x_center, y)
+            if pt:
+                points.append(pt)
+    for x in range(x_center - CENTER_CROSS_LEN, x_center + CENTER_CROSS_LEN + 1):
+        if 0 <= x < RES_X:
+            pt = trace(x, y_center)
+            if pt:
+                points.append(pt)
 
-    print(f"FOV ruler: {len(points)} points generated")
+    print(f"FOV ruler: {len(points)} points")
     return points
 
 # -------------------------------------------------------------------
 # PART 2: ALIGNMENT CALIBRATION
 # -------------------------------------------------------------------
 def generate_alignment_pattern(trace):
-    """Generate alignment calibration points assuming ALIGN_HFOV_DEG.
+    """Generate alignment calibration pattern.
 
-    The Blender camera should already be set to ALIGN_HFOV_DEG before
-    running this. The alignment pattern uses the full RES_X x RES_Y
-    pixel grid directly (no FOV conversion needed — the camera FOV
-    IS the projector FOV in this mode).
+    Blender camera FOV should equal ALIGN_HFOV_DEG so projector pixels
+    map 1:1 to camera pixels. Features at pixel coords correspond
+    directly to specific projector pixels.
     """
     points = []
     border_points = []
     inset = ALIGNMENT_INSET_PX
 
-    # Effective pixel bounds
-    x_min, x_max = inset, RES_X - 1 - inset
-    y_min, y_max = inset, RES_Y - 1 - inset
+    x_min = inset
+    x_max = RES_X - 1 - inset
+    y_min = inset
+    y_max = RES_Y - 1 - inset
     cx = RES_X // 2
     cy = RES_Y // 2
 
-    # --- 1. Corner filled circles ---
+    # === 1. CORNER FILLED CIRCLES ===
+    # Top corners at front of glass, bottom at back.
+    # Depth split verifies distance AND vertical angle.
     corners = [
-        (x_min, y_min, 0.1),   # Top-left, front of glass
-        (x_max, y_min, 0.1),   # Top-right, front of glass
-        (x_min, y_max, 0.9),   # Bottom-left, back of glass
-        (x_max, y_max, 0.9),   # Bottom-right, back of glass
+        (x_min, y_min, 0.1),   # Top-left, front
+        (x_max, y_min, 0.1),   # Top-right, front
+        (x_min, y_max, 0.9),   # Bottom-left, back
+        (x_max, y_max, 0.9),   # Bottom-right, back
     ]
     for corner_x, corner_y, depth in corners:
         r = CORNER_RADIUS_PX
@@ -572,104 +564,117 @@ def generate_alignment_pattern(trace):
                         if pt:
                             points.append(pt)
 
-    # --- 2. Center crosshair ---
-    # Vertical arm
+    # === 2. CENTER CROSSHAIR ===
     for y in range(cy - CROSSHAIR_LEN_PX, cy + CROSSHAIR_LEN_PX + 1):
         if 0 <= y < RES_Y:
             pt = trace(cx, y)
             if pt:
                 points.append(pt)
-    # Horizontal arm
     for x in range(cx - CROSSHAIR_LEN_PX, cx + CROSSHAIR_LEN_PX + 1):
         if 0 <= x < RES_X:
             pt = trace(x, cy)
             if pt:
                 points.append(pt)
 
-    # --- 3. Edge midpoint markers ---
-    # Top edge midpoint (vertical tick downward)
+    # === 3. EDGE MIDPOINT MARKERS ===
+    # Ticks pointing inward from each edge midpoint.
+    # Top-center (front depth)
     for y in range(y_min, y_min + EDGE_TICK_LEN_PX):
         pt = trace(cx, y, 0.1)
         if pt:
             points.append(pt)
-    # Bottom edge midpoint (vertical tick upward)
-    for y in range(y_max - EDGE_TICK_LEN_PX, y_max + 1):
+    # Bottom-center (back depth)
+    for y in range(y_max - EDGE_TICK_LEN_PX + 1, y_max + 1):
         pt = trace(cx, y, 0.9)
         if pt:
             points.append(pt)
-    # Left edge midpoint (horizontal tick rightward)
+    # Left-center (mid depth)
     for x in range(x_min, x_min + EDGE_TICK_LEN_PX):
         pt = trace(x, cy)
         if pt:
             points.append(pt)
-    # Right edge midpoint (horizontal tick leftward)
-    for x in range(x_max - EDGE_TICK_LEN_PX, x_max + 1):
+    # Right-center (mid depth)
+    for x in range(x_max - EDGE_TICK_LEN_PX + 1, x_max + 1):
         pt = trace(x, cy)
         if pt:
             points.append(pt)
 
-    # --- 4. Border frame with depth interpolation ---
-    # Top edge (front of glass)
+    # === 4. BORDER FRAME (depth-interpolated) ===
+    # Top=front, bottom=back, sides interpolate linearly.
     for x in range(x_min, x_max + 1):
         pt = trace(x, y_min, 0.1)
         if pt:
             border_points.append(pt)
-    # Bottom edge (back of glass)
     for x in range(x_min, x_max + 1):
         pt = trace(x, y_max, 0.9)
         if pt:
             border_points.append(pt)
-    # Left edge (front->back interpolation top to bottom)
     for y in range(y_min, y_max + 1):
         depth = 0.1 + 0.8 * ((y - y_min) / max(1, y_max - y_min))
         pt = trace(x_min, y, depth)
         if pt:
             border_points.append(pt)
-    # Right edge (front->back interpolation top to bottom)
     for y in range(y_min, y_max + 1):
         depth = 0.1 + 0.8 * ((y - y_min) / max(1, y_max - y_min))
         pt = trace(x_max, y, depth)
         if pt:
             border_points.append(pt)
 
-    print(f"Alignment pattern: {len(points)} points, "
-          f"border: {len(border_points)} points")
+    # === 5. SPARSE ALIGNMENT GRID ===
+    # Interior dots for catching distortion or local misalignment.
+    if GRID_ENABLED:
+        for col in range(1, GRID_COLS):
+            for row in range(1, GRID_ROWS):
+                gx = int(x_min + (x_max - x_min) * col / GRID_COLS)
+                gy = int(y_min + (y_max - y_min) * row / GRID_ROWS)
+                depth = 0.1 + 0.8 * ((gy - y_min) / max(1, y_max - y_min))
+                r = GRID_DOT_RADIUS_PX
+                for dy in range(-r, r + 1):
+                    for dx in range(-r, r + 1):
+                        if dx * dx + dy * dy <= r * r:
+                            px = gx + dx
+                            py = gy + dy
+                            if 0 <= px < RES_X and 0 <= py < RES_Y:
+                                pt = trace(px, py, depth)
+                                if pt:
+                                    points.append(pt)
+
+    print(f"Alignment: {len(points)} feature pts + "
+          f"{len(border_points)} border pts")
     return points, border_points
 
 # -------------------------------------------------------------------
 # MAIN
 # -------------------------------------------------------------------
 def generate_calibration():
-    print("=" * 50)
-    print("PROJECTOR FOV CALIBRATION & ALIGNMENT")
-    print("=" * 50)
+    print("=" * 55)
+    print("  NEBRA ANYBEAM FOV CALIBRATION & ALIGNMENT")
+    print("=" * 55)
 
     scene = bpy.context.scene
     cube = bpy.data.objects.get(CUBE_NAME)
     cam = scene.camera
     if not cam or not cube:
-        return print("Error: Missing Camera or Cube object")
+        return print("ERROR: Need active Camera + object named "
+                     f"'{CUBE_NAME}' in scene.")
 
     cam_hfov = get_camera_hfov(scene, cam)
     cam_vfov = get_camera_vfov(scene, cam)
-    print(f"Camera HFOV: {cam_hfov:.2f}°  VFOV: {cam_vfov:.2f}°")
-    print(f"Resolution: {RES_X}x{RES_Y}")
+    print(f"Camera: HFOV={cam_hfov:.2f} deg  VFOV={cam_vfov:.2f} deg")
+    print(f"Projector: {RES_X}x{RES_Y} (Nebra AnyBeam)")
 
     trace = build_ray_tracer(scene, cam, cube)
-
     all_points = []
 
-    # --- Part 1: FOV ruler ---
     if GENERATE_FOV_RULER:
-        print("\n--- Generating FOV Ruler ---")
+        print("\n--- Part 1: FOV Ruler ---")
         ruler_pts = generate_fov_ruler(trace)
         create_obj_from_points(FOV_RULER_NAME, ruler_pts,
                                color=(0.0, 1.0, 0.0, 1.0))
         all_points.extend(ruler_pts)
 
-    # --- Part 2: Alignment pattern ---
     if GENERATE_ALIGNMENT:
-        print("\n--- Generating Alignment Pattern ---")
+        print("\n--- Part 2: Alignment Pattern ---")
         align_pts, border_pts = generate_alignment_pattern(trace)
         create_obj_from_points(ALIGNMENT_NAME, align_pts,
                                color=(1.0, 1.0, 0.0, 1.0))
@@ -678,12 +683,11 @@ def generate_calibration():
         all_points.extend(align_pts)
         all_points.extend(border_pts)
 
-    # --- Export ---
     if DO_EXPORT and all_points:
         write_dxf_points(EXPORT_PATH, all_points)
 
-    print(f"\nTotal calibration points: {len(all_points)}")
-    print("Done.")
+    print(f"\nTotal: {len(all_points)} calibration points")
+    print("DONE")
 
-if __name__ == "__main__":
-    generate_calibration()
+# --- Run from Blender scripting play button ---
+generate_calibration()
