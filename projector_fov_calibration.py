@@ -147,10 +147,8 @@ GRID_COLS          = 8
 GRID_ROWS          = 5
 GRID_DOT_RADIUS_PX = 2
 
-# Wireframe box border
-BORDER_DEPTH_FRONT = 0.1   # Front face depth factor
-BORDER_DEPTH_BACK  = 0.9   # Back face depth factor
-BORDER_DEPTH_STEPS = 60    # Points per depth-direction edge
+# Border straight-line interpolation steps (points per edge)
+BORDER_LINE_STEPS  = 200
 
 # -------------------------------------------------------------------
 # GLASS / OPTICS
@@ -683,16 +681,24 @@ def generate_fov_ruler(trace):
 # -------------------------------------------------------------------
 # PART 2: ALIGNMENT CALIBRATION
 # -------------------------------------------------------------------
-def generate_alignment_pattern(trace):
-    """Generate alignment calibration pattern.
+def straight_line_3d(p_start, p_end, steps):
+    """Linearly interpolate between two 3D points. Returns list of Vectors."""
+    pts = []
+    for i in range(steps + 1):
+        t = i / steps
+        pts.append(p_start.lerp(p_end, t))
+    return pts
 
-    Blender camera FOV should equal ALIGN_HFOV_DEG so projector pixels
-    map 1:1 to camera pixels. Features at pixel coords correspond
-    directly to specific projector pixels.
+def generate_alignment_pattern(trace):
+    """Generate alignment calibration pattern — all features coplanar.
+
+    Everything at depth_factor=0.5 (midpoint of safe zone).
+    Border uses 3D endpoint interpolation for guaranteed straight lines.
     """
     points = []
     border_points = []
     inset = ALIGNMENT_INSET_PX
+    d = 0.5  # Single depth for everything
 
     x_min = inset
     x_max = RES_X - 1 - inset
@@ -702,15 +708,13 @@ def generate_alignment_pattern(trace):
     cy = RES_Y // 2
 
     # === 1. CORNER FILLED CIRCLES ===
-    # Top corners at front of glass, bottom at back.
-    # Depth split verifies distance AND vertical angle.
     corners = [
-        (x_min, y_min, 0.1),   # Top-left, front
-        (x_max, y_min, 0.1),   # Top-right, front
-        (x_min, y_max, 0.9),   # Bottom-left, back
-        (x_max, y_max, 0.9),   # Bottom-right, back
+        (x_min, y_min),
+        (x_max, y_min),
+        (x_min, y_max),
+        (x_max, y_max),
     ]
-    for corner_x, corner_y, depth in corners:
+    for corner_x, corner_y in corners:
         r = CORNER_RADIUS_PX
         for dy in range(-r, r + 1):
             for dx in range(-r, r + 1):
@@ -718,99 +722,63 @@ def generate_alignment_pattern(trace):
                     px = corner_x + dx
                     py = corner_y + dy
                     if 0 <= px < RES_X and 0 <= py < RES_Y:
-                        pt = trace(px, py, depth)
+                        pt = trace(px, py, d)
                         if pt:
                             points.append(pt)
 
     # === 2. CENTER CROSSHAIR ===
     for y in range(cy - CROSSHAIR_LEN_PX, cy + CROSSHAIR_LEN_PX + 1):
         if 0 <= y < RES_Y:
-            pt = trace(cx, y)
+            pt = trace(cx, y, d)
             if pt:
                 points.append(pt)
     for x in range(cx - CROSSHAIR_LEN_PX, cx + CROSSHAIR_LEN_PX + 1):
         if 0 <= x < RES_X:
-            pt = trace(x, cy)
+            pt = trace(x, cy, d)
             if pt:
                 points.append(pt)
 
     # === 3. EDGE MIDPOINT MARKERS ===
-    # Ticks pointing inward from each edge midpoint.
-    # Top-center (front depth)
     for y in range(y_min, y_min + EDGE_TICK_LEN_PX):
-        pt = trace(cx, y, 0.1)
+        pt = trace(cx, y, d)
         if pt:
             points.append(pt)
-    # Bottom-center (back depth)
     for y in range(y_max - EDGE_TICK_LEN_PX + 1, y_max + 1):
-        pt = trace(cx, y, 0.9)
+        pt = trace(cx, y, d)
         if pt:
             points.append(pt)
-    # Left-center (mid depth)
     for x in range(x_min, x_min + EDGE_TICK_LEN_PX):
-        pt = trace(x, cy)
+        pt = trace(x, cy, d)
         if pt:
             points.append(pt)
-    # Right-center (mid depth)
     for x in range(x_max - EDGE_TICK_LEN_PX + 1, x_max + 1):
-        pt = trace(x, cy)
+        pt = trace(x, cy, d)
         if pt:
             points.append(pt)
 
-    # === 4. WIREFRAME BOX BORDER ===
-    # 12-edge closed box: front rect + back rect + 4 depth lines at corners.
-    df = BORDER_DEPTH_FRONT
-    db = BORDER_DEPTH_BACK
+    # === 4. BORDER RECTANGLE (straight lines in 3D) ===
+    # Trace 4 corners, then interpolate in world space.
+    # This guarantees straight lines regardless of refraction curvature.
+    c_tl = trace(x_min, y_min, d)
+    c_tr = trace(x_max, y_min, d)
+    c_bl = trace(x_min, y_max, d)
+    c_br = trace(x_max, y_max, d)
 
-    # Front face rectangle (4 edges)
-    for x in range(x_min, x_max + 1):       # Top, front
-        pt = trace(x, y_min, df)
-        if pt: border_points.append(pt)
-    for x in range(x_min, x_max + 1):       # Bottom, front
-        pt = trace(x, y_max, df)
-        if pt: border_points.append(pt)
-    for y in range(y_min, y_max + 1):        # Left, front
-        pt = trace(x_min, y, df)
-        if pt: border_points.append(pt)
-    for y in range(y_min, y_max + 1):        # Right, front
-        pt = trace(x_max, y, df)
-        if pt: border_points.append(pt)
-
-    # Back face rectangle (4 edges)
-    for x in range(x_min, x_max + 1):       # Top, back
-        pt = trace(x, y_min, db)
-        if pt: border_points.append(pt)
-    for x in range(x_min, x_max + 1):       # Bottom, back
-        pt = trace(x, y_max, db)
-        if pt: border_points.append(pt)
-    for y in range(y_min, y_max + 1):        # Left, back
-        pt = trace(x_min, y, db)
-        if pt: border_points.append(pt)
-    for y in range(y_min, y_max + 1):        # Right, back
-        pt = trace(x_max, y, db)
-        if pt: border_points.append(pt)
-
-    # Depth lines at 4 corners (connecting front face to back face)
-    corner_pixels = [
-        (x_min, y_min),  # Top-left
-        (x_max, y_min),  # Top-right
-        (x_min, y_max),  # Bottom-left
-        (x_max, y_max),  # Bottom-right
-    ]
-    for cpx, cpy in corner_pixels:
-        for i in range(BORDER_DEPTH_STEPS + 1):
-            d = df + (db - df) * (i / BORDER_DEPTH_STEPS)
-            pt = trace(cpx, cpy, d)
-            if pt: border_points.append(pt)
+    if c_tl and c_tr and c_bl and c_br:
+        n = BORDER_LINE_STEPS
+        border_points.extend(straight_line_3d(c_tl, c_tr, n))  # Top
+        border_points.extend(straight_line_3d(c_bl, c_br, n))  # Bottom
+        border_points.extend(straight_line_3d(c_tl, c_bl, n))  # Left
+        border_points.extend(straight_line_3d(c_tr, c_br, n))  # Right
+    else:
+        print("WARNING: Could not trace all 4 border corners")
 
     # === 5. SPARSE ALIGNMENT GRID ===
-    # Interior dots for catching distortion or local misalignment.
     if GRID_ENABLED:
         for col in range(1, GRID_COLS):
             for row in range(1, GRID_ROWS):
                 gx = int(x_min + (x_max - x_min) * col / GRID_COLS)
                 gy = int(y_min + (y_max - y_min) * row / GRID_ROWS)
-                depth = 0.1 + 0.8 * ((gy - y_min) / max(1, y_max - y_min))
                 r = GRID_DOT_RADIUS_PX
                 for dy in range(-r, r + 1):
                     for dx in range(-r, r + 1):
@@ -818,7 +786,7 @@ def generate_alignment_pattern(trace):
                             px = gx + dx
                             py = gy + dy
                             if 0 <= px < RES_X and 0 <= py < RES_Y:
-                                pt = trace(px, py, depth)
+                                pt = trace(px, py, d)
                                 if pt:
                                     points.append(pt)
 
