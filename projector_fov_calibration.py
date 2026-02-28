@@ -191,12 +191,13 @@ GRID_COLS          = 8
 GRID_ROWS          = 5
 GRID_DOT_RADIUS_PX = 2
 
-# Border straight-line interpolation steps (points per edge)
-BORDER_LINE_STEPS  = 200
-
 # Margin (in pixels) around the FOV ruler where the alignment border
 # leaves gaps so the ruler ticks remain visible.
 RULER_GAP_MARGIN   = 5
+
+# Border pixel step — trace every Nth projector pixel along each edge.
+# 1280//5 = 256 pts per horizontal edge, 720//5 = 144 per vertical edge.
+BORDER_PIXEL_STEP  = 5
 
 # -------------------------------------------------------------------
 # DEPTH VERIFICATION PROBES CONFIG
@@ -785,16 +786,6 @@ def generate_fov_ruler(trace):
 # -------------------------------------------------------------------
 # PART 2: ALIGNMENT CALIBRATION
 # -------------------------------------------------------------------
-def straight_line_3d(p_start, p_end, steps):
-    """Linearly interpolate between two 3D points. Returns list of Vectors."""
-    pts = []
-    if steps < 1:
-        return pts
-    for i in range(steps + 1):
-        t = i / steps
-        pts.append(p_start.lerp(p_end, t))
-    return pts
-
 def generate_alignment_pattern(trace):
     """Generate alignment calibration pattern mapped to projector FOV.
 
@@ -885,71 +876,58 @@ def generate_alignment_pattern(trace):
         if pt:
             points.append(pt)
 
-    # === 4. BORDER RECTANGLE (with gaps for FOV ruler) ===
-    # Trace 4 corners, then interpolate in world space with gaps where
-    # the FOV ruler ticks cross so the ruler stays readable.
-    c_tl = trace(x_min, y_min, d)
-    c_tr = trace(x_max, y_min, d)
-    c_bl = trace(x_min, y_max, d)
-    c_br = trace(x_max, y_max, d)
+    # === 4. BORDER RECTANGLE (per-pixel, with gaps for FOV ruler) ===
+    # Trace along projector edge pixels (every BORDER_PIXEL_STEP-th pixel)
+    # mapped to camera pixel space.  Each border point corresponds to an
+    # actual projector pixel, not an interpolated 3D position.
+    # 1280//5 = 256 pts per horizontal edge, 720//5 = 144 per vertical.
+    y_center = RES_Y // 2
+    x_center = RES_X // 2
+    gap = RULER_GAP_MARGIN
 
-    if c_tl and c_tr and c_bl and c_br:
-        n = BORDER_LINE_STEPS
-        y_center = RES_Y // 2
-        x_center = RES_X // 2
-        gap = RULER_GAP_MARGIN
+    # H ruler exclusion zone for vertical edges (left/right)
+    ruler_y_top = y_center - TICK_HEIGHT_WHOLE // 2 - gap
+    ruler_y_bot = y_center + TICK_HEIGHT_WHOLE // 2 + gap
 
-        # H ruler exclusion zone for vertical edges (left/right)
-        ruler_y_top = y_center - TICK_HEIGHT_WHOLE // 2 - gap
-        ruler_y_bot = y_center + TICK_HEIGHT_WHOLE // 2 + gap
+    # V ruler exclusion zone for horizontal edges (top/bottom)
+    ruler_x_left = x_center - TICK_HEIGHT_WHOLE // 2 - gap
+    ruler_x_right = x_center + TICK_HEIGHT_WHOLE // 2 + gap
 
-        # V ruler exclusion zone for horizontal edges (top/bottom)
-        ruler_x_left = x_center - TICK_HEIGHT_WHOLE // 2 - gap
-        ruler_x_right = x_center + TICK_HEIGHT_WHOLE // 2 + gap
+    # --- Top edge: y = y_min, x varies across projector width ---
+    for proj_x in range(0, RES_X, BORDER_PIXEL_STEP):
+        cam_x = x_min + (x_max - x_min) * proj_x / (RES_X - 1)
+        if ruler_x_left <= cam_x <= ruler_x_right:
+            continue
+        pt = trace(cam_x, y_min, d)
+        if pt:
+            border_points.append(pt)
 
-        # Parametric gap positions for vertical edges (y_min → y_max)
-        y_range = max(1, y_max - y_min)
-        t_gy0 = max(0.0, (ruler_y_top - y_min) / y_range)
-        t_gy1 = min(1.0, (ruler_y_bot - y_min) / y_range)
+    # --- Bottom edge: y = y_max, x varies ---
+    for proj_x in range(0, RES_X, BORDER_PIXEL_STEP):
+        cam_x = x_min + (x_max - x_min) * proj_x / (RES_X - 1)
+        if ruler_x_left <= cam_x <= ruler_x_right:
+            continue
+        pt = trace(cam_x, y_max, d)
+        if pt:
+            border_points.append(pt)
 
-        # Parametric gap positions for horizontal edges (x_min → x_max)
-        x_range = max(1, x_max - x_min)
-        t_gx0 = max(0.0, (ruler_x_left - x_min) / x_range)
-        t_gx1 = min(1.0, (ruler_x_right - x_min) / x_range)
+    # --- Left edge: x = x_min, y varies across projector height ---
+    for proj_y in range(0, RES_Y, BORDER_PIXEL_STEP):
+        cam_y = y_min + (y_max - y_min) * proj_y / (RES_Y - 1)
+        if ruler_y_top <= cam_y <= ruler_y_bot:
+            continue
+        pt = trace(x_min, cam_y, d)
+        if pt:
+            border_points.append(pt)
 
-        # --- Top edge: x_min→x_max at y_min, gap around V ruler ---
-        p_top_gap_l = c_tl.lerp(c_tr, t_gx0)
-        p_top_gap_r = c_tl.lerp(c_tr, t_gx1)
-        n_seg = max(1, int(n * t_gx0))
-        border_points.extend(straight_line_3d(c_tl, p_top_gap_l, n_seg))
-        n_seg = max(1, int(n * (1.0 - t_gx1)))
-        border_points.extend(straight_line_3d(p_top_gap_r, c_tr, n_seg))
-
-        # --- Bottom edge: x_min→x_max at y_max, gap around V ruler ---
-        p_bot_gap_l = c_bl.lerp(c_br, t_gx0)
-        p_bot_gap_r = c_bl.lerp(c_br, t_gx1)
-        n_seg = max(1, int(n * t_gx0))
-        border_points.extend(straight_line_3d(c_bl, p_bot_gap_l, n_seg))
-        n_seg = max(1, int(n * (1.0 - t_gx1)))
-        border_points.extend(straight_line_3d(p_bot_gap_r, c_br, n_seg))
-
-        # --- Left edge: y_min→y_max at x_min, gap around H ruler ---
-        p_left_gap_t = c_tl.lerp(c_bl, t_gy0)
-        p_left_gap_b = c_tl.lerp(c_bl, t_gy1)
-        n_seg = max(1, int(n * t_gy0))
-        border_points.extend(straight_line_3d(c_tl, p_left_gap_t, n_seg))
-        n_seg = max(1, int(n * (1.0 - t_gy1)))
-        border_points.extend(straight_line_3d(p_left_gap_b, c_bl, n_seg))
-
-        # --- Right edge: y_min→y_max at x_max, gap around H ruler ---
-        p_right_gap_t = c_tr.lerp(c_br, t_gy0)
-        p_right_gap_b = c_tr.lerp(c_br, t_gy1)
-        n_seg = max(1, int(n * t_gy0))
-        border_points.extend(straight_line_3d(c_tr, p_right_gap_t, n_seg))
-        n_seg = max(1, int(n * (1.0 - t_gy1)))
-        border_points.extend(straight_line_3d(p_right_gap_b, c_br, n_seg))
-    else:
-        print("WARNING: Could not trace all 4 border corners")
+    # --- Right edge: x = x_max, y varies ---
+    for proj_y in range(0, RES_Y, BORDER_PIXEL_STEP):
+        cam_y = y_min + (y_max - y_min) * proj_y / (RES_Y - 1)
+        if ruler_y_top <= cam_y <= ruler_y_bot:
+            continue
+        pt = trace(x_max, cam_y, d)
+        if pt:
+            border_points.append(pt)
 
     # === 5. SPARSE ALIGNMENT GRID ===
     if GRID_ENABLED:
