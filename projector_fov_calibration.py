@@ -165,6 +165,14 @@ TICK_HEIGHT_TENTH = 14    # other tenths (short)
 # Center reference crosshair half-arm length
 CENTER_CROSS_LEN  = 25
 
+# Ruler tick depth range — ticks sweep from front to back so that
+# projector positioning errors don't affect FOV calibration.
+# If all ticks are coplanar, a lateral shift or tilt in the projector
+# can mimic a different FOV. With depth variation, each tick is a 3D
+# line: the "last glowing tick" is determined purely by cone angle.
+RULER_DEPTH_FRONT = 0.20   # Depth at top/left end of tick (0=front face)
+RULER_DEPTH_BACK  = 0.80   # Depth at bottom/right end of tick (1=back face)
+
 # -------------------------------------------------------------------
 # ALIGNMENT PATTERN CONFIG
 # -------------------------------------------------------------------
@@ -603,7 +611,14 @@ def get_tick_height(fov_rounded):
         return TICK_HEIGHT_TENTH
 
 def generate_fov_ruler(trace):
-    """Generate height-encoded tick marks for FOV measurement."""
+    """Generate height-encoded tick marks for FOV measurement.
+
+    Each tick sweeps depth from RULER_DEPTH_FRONT to RULER_DEPTH_BACK
+    along its length, making it a 3D line rather than a flat mark.
+    This ensures projector positioning errors (distance, tilt) don't
+    corrupt the FOV reading — the last glowing tick is determined
+    purely by the projector's cone angle, not its position.
+    """
     scene = bpy.context.scene
     cam = scene.camera
     cam_hfov = get_camera_hfov(scene, cam)
@@ -692,14 +707,19 @@ def generate_fov_ruler(trace):
         ix_r = int(round(px_right))
         if 0 <= ix_r < RES_X:
             for y in range(y_start, y_end + 1):
-                pt = trace(ix_r, y)
+                # Depth sweeps front→back along tick height
+                t = (y - y_start) / max(1, y_end - y_start)
+                d = RULER_DEPTH_FRONT + (RULER_DEPTH_BACK - RULER_DEPTH_FRONT) * t
+                pt = trace(ix_r, y, d)
                 if pt:
                     points.append(pt)
 
         ix_l = int(round(px_left))
         if 0 <= ix_l < RES_X:
             for y in range(y_start, y_end + 1):
-                pt = trace(ix_l, y)
+                t = (y - y_start) / max(1, y_end - y_start)
+                d = RULER_DEPTH_FRONT + (RULER_DEPTH_BACK - RULER_DEPTH_FRONT) * t
+                pt = trace(ix_l, y, d)
                 if pt:
                     points.append(pt)
 
@@ -721,28 +741,41 @@ def generate_fov_ruler(trace):
         iy_b = int(round(py_bottom))
         if 0 <= iy_b < RES_Y:
             for x in range(x_start, x_end + 1):
-                pt = trace(x, iy_b)
+                # Depth sweeps front→back along tick width
+                t = (x - x_start) / max(1, x_end - x_start)
+                d = RULER_DEPTH_FRONT + (RULER_DEPTH_BACK - RULER_DEPTH_FRONT) * t
+                pt = trace(x, iy_b, d)
                 if pt:
                     points.append(pt)
 
         iy_t = int(round(py_top))
         if 0 <= iy_t < RES_Y:
             for x in range(x_start, x_end + 1):
-                pt = trace(x, iy_t)
+                t = (x - x_start) / max(1, x_end - x_start)
+                d = RULER_DEPTH_FRONT + (RULER_DEPTH_BACK - RULER_DEPTH_FRONT) * t
+                pt = trace(x, iy_t, d)
                 if pt:
                     points.append(pt)
 
         fov = round(fov + VFOV_STEP_DEG, 1)
 
-    # === CENTER REFERENCE CROSSHAIR ===
-    for y in range(y_center - CENTER_CROSS_LEN, y_center + CENTER_CROSS_LEN + 1):
+    # === CENTER REFERENCE CROSSHAIR (with depth sweep) ===
+    ch_y_start = y_center - CENTER_CROSS_LEN
+    ch_y_end = y_center + CENTER_CROSS_LEN
+    for y in range(ch_y_start, ch_y_end + 1):
         if 0 <= y < RES_Y:
-            pt = trace(x_center, y)
+            t = (y - ch_y_start) / max(1, ch_y_end - ch_y_start)
+            d = RULER_DEPTH_FRONT + (RULER_DEPTH_BACK - RULER_DEPTH_FRONT) * t
+            pt = trace(x_center, y, d)
             if pt:
                 points.append(pt)
-    for x in range(x_center - CENTER_CROSS_LEN, x_center + CENTER_CROSS_LEN + 1):
+    ch_x_start = x_center - CENTER_CROSS_LEN
+    ch_x_end = x_center + CENTER_CROSS_LEN
+    for x in range(ch_x_start, ch_x_end + 1):
         if 0 <= x < RES_X:
-            pt = trace(x, y_center)
+            t = (x - ch_x_start) / max(1, ch_x_end - ch_x_start)
+            d = RULER_DEPTH_FRONT + (RULER_DEPTH_BACK - RULER_DEPTH_FRONT) * t
+            pt = trace(x, y_center, d)
             if pt:
                 points.append(pt)
 
