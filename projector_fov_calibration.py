@@ -168,6 +168,10 @@ TICK_HEIGHT_TENTH = 14    # other tenths (short)
 # Center reference crosshair half-arm length
 CENTER_CROSS_LEN  = 25
 
+# Ruler tick pixel step — trace every Nth pixel along each tick line.
+# 1 = every pixel (dense), 3 = every 3rd pixel (sparse).
+RULER_TICK_STEP   = 3
+
 # Ruler tick depth range — ticks sweep from front to back so that
 # projector positioning errors don't affect FOV calibration.
 # If all ticks are coplanar, a lateral shift or tilt in the projector
@@ -746,7 +750,7 @@ def generate_fov_ruler(trace):
 
         ix_r = int(round(px_right))
         if 0 <= ix_r < RES_X:
-            for y in range(y_start, y_end + 1):
+            for y in range(y_start, y_end + 1, RULER_TICK_STEP):
                 t = (y - y_start) / max(1, y_end - y_start)
                 d = RULER_DEPTH_FRONT + (RULER_DEPTH_BACK - RULER_DEPTH_FRONT) * t
                 pt = trace(ix_r, y, d)
@@ -755,7 +759,7 @@ def generate_fov_ruler(trace):
 
         ix_l = int(round(px_left))
         if 0 <= ix_l < RES_X:
-            for y in range(y_start, y_end + 1):
+            for y in range(y_start, y_end + 1, RULER_TICK_STEP):
                 t = (y - y_start) / max(1, y_end - y_start)
                 d = RULER_DEPTH_FRONT + (RULER_DEPTH_BACK - RULER_DEPTH_FRONT) * t
                 pt = trace(ix_l, y, d)
@@ -779,7 +783,7 @@ def generate_fov_ruler(trace):
 
         iy_b = int(round(py_bottom))
         if 0 <= iy_b < RES_Y:
-            for x in range(x_start, x_end + 1):
+            for x in range(x_start, x_end + 1, RULER_TICK_STEP):
                 t = (x - x_start) / max(1, x_end - x_start)
                 d = RULER_DEPTH_FRONT + (RULER_DEPTH_BACK - RULER_DEPTH_FRONT) * t
                 pt = trace(x, iy_b, d)
@@ -788,7 +792,7 @@ def generate_fov_ruler(trace):
 
         iy_t = int(round(py_top))
         if 0 <= iy_t < RES_Y:
-            for x in range(x_start, x_end + 1):
+            for x in range(x_start, x_end + 1, RULER_TICK_STEP):
                 t = (x - x_start) / max(1, x_end - x_start)
                 d = RULER_DEPTH_FRONT + (RULER_DEPTH_BACK - RULER_DEPTH_FRONT) * t
                 pt = trace(x, iy_t, d)
@@ -800,7 +804,7 @@ def generate_fov_ruler(trace):
     # === CENTER REFERENCE CROSSHAIR (with depth sweep) ===
     ch_y_start = y_center - CENTER_CROSS_LEN
     ch_y_end = y_center + CENTER_CROSS_LEN
-    for y in range(ch_y_start, ch_y_end + 1):
+    for y in range(ch_y_start, ch_y_end + 1, RULER_TICK_STEP):
         if 0 <= y < RES_Y:
             t = (y - ch_y_start) / max(1, ch_y_end - ch_y_start)
             d = RULER_DEPTH_FRONT + (RULER_DEPTH_BACK - RULER_DEPTH_FRONT) * t
@@ -809,7 +813,7 @@ def generate_fov_ruler(trace):
                 points.append(pt)
     ch_x_start = x_center - CENTER_CROSS_LEN
     ch_x_end = x_center + CENTER_CROSS_LEN
-    for x in range(ch_x_start, ch_x_end + 1):
+    for x in range(ch_x_start, ch_x_end + 1, RULER_TICK_STEP):
         if 0 <= x < RES_X:
             t = (x - ch_x_start) / max(1, ch_x_end - ch_x_start)
             d = RULER_DEPTH_FRONT + (RULER_DEPTH_BACK - RULER_DEPTH_FRONT) * t
