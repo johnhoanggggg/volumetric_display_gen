@@ -344,34 +344,48 @@ def check_content_intersection(content_bvh, content_mat_inv,
                                content_normal_mat,
                                ray_enter, ray_exit, n_samples,
                                viewer_dir=None):
-    """Sample along the refracted ray segment and check for content hits.
+    """Check if the refracted ray segment intersects the content mesh.
 
     Returns (hit_point_world, surface_normal_world, shade) or None.
-    - hit_point_world: the 3D point where the ray intersects content
-    - surface_normal_world: the content surface normal at hit
-    - shade: brightness value (0-1) based on viewer angle
+    Handles the case where the ray starts inside the content mesh
+    (content larger than the safe zone).
     """
-    ray_vec = ray_exit - ray_enter
-    ray_len = ray_vec.length
-    if ray_len < 1e-9:
-        return None
-    ray_dir = ray_vec.normalized()
-
-    # Cast ray through content in local space
+    # Transform full ray segment to content's local space
     origin_local = content_mat_inv @ ray_enter
-    dir_local = (content_mat_inv.to_3x3() @ ray_dir).normalized()
-
-    hit = content_bvh.ray_cast(origin_local, dir_local, ray_len)
-    if not hit[0]:
+    exit_local = content_mat_inv @ ray_exit
+    local_vec = exit_local - origin_local
+    ray_len_local = local_vec.length
+    if ray_len_local < 1e-9:
         return None
+    dir_local = local_vec.normalized()
 
-    hit_local, normal_local = hit[0], hit[1]
-    hit_world = content_mat_inv.inverted() @ hit_local
+    # Check for content intersection within the safe zone segment
+    hit = content_bvh.ray_cast(origin_local, dir_local, ray_len_local)
+
+    if hit[0]:
+        # Direct intersection within safe zone
+        hit_local, normal_local = hit[0], hit[1]
+    else:
+        # No hit within safe zone.  Check if ray starts INSIDE the
+        # content by casting with unlimited distance.
+        far_hit = content_bvh.ray_cast(origin_local, dir_local)
+        if not far_hit[0]:
+            return None          # no content along this ray at all
+        # Back-face test: if the first surface normal points the same
+        # direction as the ray, we are hitting the inside of a face
+        # → the ray origin is inside the mesh.
+        if far_hit[1].dot(dir_local) <= 0:
+            return None          # content starts beyond safe zone
+        # Ray origin is inside content — use safe zone midpoint
+        hit_local = (origin_local + exit_local) * 0.5
+        normal_local = -far_hit[1]   # flip exit normal to face entry
+
+    content_mat = content_mat_inv.inverted()
+    hit_world = content_mat @ hit_local
     normal_world = (content_normal_mat @ normal_local).normalized()
 
     shade = 1.0
     if viewer_dir is not None and SHADING_MODE == 'NORMAL':
-        # Lambertian shading: dot(normal, to_viewer)
         shade = max(0.1, normal_world.dot(-viewer_dir.normalized()))
 
     return hit_world, normal_world, shade
@@ -420,6 +434,32 @@ def generate_projector_image():
     content_mat_inv = content_mat.inverted()
     content_normal_mat = content_mat_inv.transposed().to_3x3()
 
+    # --- Content diagnostic ---
+    print(f"\n--- CONTENT DIAGNOSTIC ---")
+    print(f"  Location: ({content.location.x:.4f}, {content.location.y:.4f}, {content.location.z:.4f})")
+    print(f"  Scale:    ({content.scale.x:.4f}, {content.scale.y:.4f}, {content.scale.z:.4f})")
+    print(f"  Vertices: {len(content.data.vertices)}, "
+          f"Polygons: {len(content.data.polygons)}")
+    bb_world = [content_mat @ Vector(c) for c in content.bound_box]
+    cnt_min = Vector((min(v[i] for v in bb_world) for i in range(3)))
+    cnt_max = Vector((max(v[i] for v in bb_world) for i in range(3)))
+    print(f"  Content BB (world): ({cnt_min.x:.4f}, {cnt_min.y:.4f}, "
+          f"{cnt_min.z:.4f}) to ({cnt_max.x:.4f}, {cnt_max.y:.4f}, "
+          f"{cnt_max.z:.4f})")
+    cbb = [cube.matrix_world @ Vector(c) for c in cube.bound_box]
+    cub_min = Vector((min(v[i] for v in cbb) for i in range(3)))
+    cub_max = Vector((max(v[i] for v in cbb) for i in range(3)))
+    print(f"  Cube BB   (world): ({cub_min.x:.4f}, {cub_min.y:.4f}, "
+          f"{cub_min.z:.4f}) to ({cub_max.x:.4f}, {cub_max.y:.4f}, "
+          f"{cub_max.z:.4f})")
+    # Quick BVH sanity test — ray from -10 on Z toward center
+    _to = content_mat_inv @ Vector((0, 0, -10))
+    _td = (content_mat_inv.to_3x3() @ Vector((0, 0, 1))).normalized()
+    _th = content_bvh.ray_cast(_to, _td, 100.0)
+    print(f"  BVH test (z-ray through origin): "
+          f"{'HIT' if _th[0] else 'MISS'}")
+    print(f"--- END DIAGNOSTIC ---\n")
+
     # External viewer direction (from viewer camera if available)
     viewer_dir = None
     if viewer_cam:
@@ -448,6 +488,12 @@ def generate_projector_image():
             total_traced += 1
 
             ray_enter, ray_exit, seg_len = ray_result
+
+            if total_traced < 3:
+                print(f"  DBG ray #{total_traced}: "
+                      f"enter=({ray_enter.x:.4f}, {ray_enter.y:.4f}, "
+                      f"{ray_enter.z:.4f})  exit=({ray_exit.x:.4f}, "
+                      f"{ray_exit.y:.4f}, {ray_exit.z:.4f})")
 
             # Check if refracted ray intersects content
             hit = check_content_intersection(
