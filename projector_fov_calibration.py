@@ -15,7 +15,7 @@ from mathutils.bvhtree import BVHTree
 #
 # ADDITIONAL FEATURES:
 #   Depth Probes      — Off-plane points to verify FOV, not just position.
-#   Vol Test Regions   — Small volumetric display patches per FOV step.
+#   Vol Test Regions   — Volumetric display test patches across the FOV.
 #   Cluster Tests      — Different point clustering densities per voxel
 #                        (per Nayar & Anand, Columbia CUCS-030-06, 2006).
 #
@@ -63,7 +63,7 @@ from mathutils.bvhtree import BVHTree
 #     Corner dots    — Verify X/Y position + FOV at projector edges.
 #     Center cross   — Verify pointing direction (yaw + pitch).
 #     Edge midpoints — Verify no roll. All 4 should be symmetric.
-#     Border frame   — Depth-interpolated. Verify distance + tilt.
+#     Border frame   — With gaps where the FOV ruler crosses.
 #     Sparse grid    — Interior dots. Catch distortion or local error.
 #     Depth probes   — Off-plane points between grid dots. Only the
 #                      correct FOV will illuminate all probes + grid
@@ -84,17 +84,18 @@ from mathutils.bvhtree import BVHTree
 # -------------------------------------------------------------------
 # VOLUMETRIC TEST REGIONS
 #
-#   Small patches of depth-distributed points near each HFOV ruler
-#   tick. Shows what the volumetric display effect looks like at
-#   different angles across the projector's FOV. Different parts of
-#   the FOV have different refraction angles, so quality may vary.
+#   Larger volumetric display test patches positioned above the bottom
+#   VFOV ruler, spread across the projector's horizontal FOV. Uses
+#   the projector's actual pixel step (5px) and 1 point per ray at
+#   random depth. Sanity check for volumetric display alignment.
 #
 # -------------------------------------------------------------------
 # CLUSTER TESTS (Nayar & Anand, 2006)
 #
 #   Multiple micro-fractures per voxel increase light scattering.
-#   Test patches with different cluster densities and spreads let you
-#   empirically compare brightness vs. diffusion tradeoffs.
+#   Points are randomly distributed in a sphere around each voxel
+#   center (not on a grid), with configurable depth and lateral spread.
+#   Compare brightness vs. diffusion tradeoffs empirically.
 #
 # -------------------------------------------------------------------
 # WORKFLOW:
@@ -153,13 +154,6 @@ VFOV_MAX_DEG  = 23.0
 VFOV_STEP_DEG = 0.1
 
 # Calibration window — fraction of the projector frame to illuminate.
-# Set to 1.0 to use the original full-frame technique (project white,
-# read the last glowing tick at the projector's cone edge).
-# Set < 1.0 for small blocks — the script generates a calibration PNG
-# with a white rectangle of this fraction of the frame. The illumination
-# edge is created by the IMAGE, not the projector's cone, so it works
-# at any distance with any block size.
-# Tick labels are real HFOV/VFOV values — read them exactly the same way.
 CALIB_WINDOW_FRACTION = 1.0        # 1.0 = full frame, 0.5 = center 50%
 CALIB_IMAGE_PATH = "C:/Users/johnh/Downloads/CalibrationImage.png"
 
@@ -170,6 +164,14 @@ TICK_HEIGHT_TENTH = 14    # other tenths (short)
 
 # Center reference crosshair half-arm length
 CENTER_CROSS_LEN  = 25
+
+# Ruler tick depth range — ticks sweep from front to back so that
+# projector positioning errors don't affect FOV calibration.
+# If all ticks are coplanar, a lateral shift or tilt in the projector
+# can mimic a different FOV. With depth variation, each tick is a 3D
+# line: the "last glowing tick" is determined purely by cone angle.
+RULER_DEPTH_FRONT = 0.20   # Depth at top/left end of tick (0=front face)
+RULER_DEPTH_BACK  = 0.80   # Depth at bottom/right end of tick (1=back face)
 
 # -------------------------------------------------------------------
 # ALIGNMENT PATTERN CONFIG
@@ -187,58 +189,83 @@ ALIGNMENT_INSET_PX = 2
 GRID_ENABLED       = True
 GRID_COLS          = 8
 GRID_ROWS          = 5
-GRID_DOT_RADIUS_PX = 2
 
-# Border straight-line interpolation steps (points per edge)
-BORDER_LINE_STEPS  = 200
+# Margin (in pixels) around the FOV ruler where the alignment border
+# leaves gaps so the ruler ticks remain visible.
+RULER_GAP_MARGIN   = 5
+
+# Border pixel step — trace every Nth projector pixel along each edge.
+# 1280//5 = 256 pts per horizontal edge, 720//5 = 144 per vertical edge.
+BORDER_PIXEL_STEP  = 5
 
 # -------------------------------------------------------------------
 # DEPTH VERIFICATION PROBES CONFIG
 # -------------------------------------------------------------------
-# Off-plane points that verify projector FOV matches simulation.
-# If all calibration points are coplanar, any FOV works at the right
-# distance. Depth-varied points introduce parallax: only the correct
-# FOV from the correct position will illuminate all points.
 GENERATE_DEPTH_PROBES = True
-DEPTH_PROBE_RADIUS_PX = 2
 DEPTH_FRONT           = 0.15   # Depth factor near front of safe zone (0=front)
 DEPTH_BACK            = 0.85   # Depth factor near back of safe zone (1=back)
 
 # -------------------------------------------------------------------
 # VOLUMETRIC TEST REGIONS CONFIG
 # -------------------------------------------------------------------
-# Small volumetric display test patches near each HFOV ruler tick.
-# Shows what volumetric depth effect looks like at different angles
-# across the projector's FOV.
-GENERATE_VOL_TEST     = True
-VOL_TEST_SIZE_PX      = 3      # Half-size of each test region in pixels
-VOL_TEST_PPR          = 5      # Points per ray in test regions
-VOL_TEST_HFOV_STEP    = 0.5    # Place test region at every N° HFOV step
+# Volumetric display test patches across the projector's horizontal
+# FOV, positioned above the bottom VFOV ruler. Uses the projector's
+# actual pixel step and 1 point per ray at random depth for a
+# realistic volumetric display sanity check.
+GENERATE_VOL_TEST      = True
+VOL_TEST_SIZE_PX       = 15    # Half-size of each test region in pixels
+VOL_TEST_PPR           = 1     # Points per ray (1 = single random depth)
+VOL_TEST_PIXEL_STEP    = 5     # Trace every Nth pixel (projector renders 1 per 5)
+VOL_TEST_N_REGIONS     = 5     # Number of test regions across H FOV
+VOL_TEST_GAP_PX        = 10    # Gap above the bottom VFOV ruler
 
 # -------------------------------------------------------------------
 # POINT CLUSTERING TEST CONFIG
 # -------------------------------------------------------------------
 # Tests different point clustering configurations per pixel to evaluate
 # light diffusion, per Nayar & Anand (Columbia CUCS-030-06, 2006).
-# Multiple micro-fractures per voxel increase scattering. Each test
-# patch uses a fixed cluster config so you can compare side-by-side.
+# Multiple micro-fractures per voxel increase scattering. Points are
+# randomly distributed in a sphere around each voxel center (not on a
+# grid), with configurable depth and lateral (pixel) spread.
 GENERATE_CLUSTER_TEST  = True
 CLUSTER_TEST_SIZE_PX   = 4     # Half-size of each cluster test patch
 CLUSTER_TEST_SPACING   = 18    # Pixels between test patch centers
 CLUSTER_CONFIGS = [
-    # (label, points_per_voxel, depth_spread_fraction)
-    # depth_spread_fraction: fraction of ray segment used for spread
-    ("1pt",       1, 0.00),   # Single point (baseline)
-    ("2pt_tight", 2, 0.01),   # 2 points, very tight cluster
-    ("2pt_med",   2, 0.05),   # 2 points, medium spread
-    ("2pt_wide",  2, 0.15),   # 2 points, wide spread
-    ("3pt_tight", 3, 0.01),   # 3 points, tight
-    ("3pt_med",   3, 0.05),   # 3 points, medium
-    ("5pt_tight", 5, 0.02),   # 5 points, tight dense cluster
-    ("5pt_med",   5, 0.05),   # 5 points, medium
-    ("8pt_tight", 8, 0.02),   # 8 points, dense
-    ("8pt_wide",  8, 0.10),   # 8 points, spread out
+    # (label, points_per_voxel, depth_spread, pixel_spread_px)
+    # depth_spread: fraction of ray segment for depth radius
+    # pixel_spread_px: lateral radius in pixels (fractional OK)
+    ("1pt",       1,  0.00, 0.0),  # Single point (baseline)
+    ("2pt_tight", 2,  0.02, 0.5),  # 2 points, very tight sphere
+    ("2pt_wide",  2,  0.10, 2.0),  # 2 points, wider sphere
+    ("3pt_tight", 3,  0.02, 0.5),  # 3 points, tight sphere
+    ("3pt_wide",  3,  0.10, 2.0),  # 3 points, wider sphere
+    ("5pt_tight", 5,  0.03, 1.0),  # 5 points, tight cluster
+    ("5pt_wide",  5,  0.10, 3.0),  # 5 points, wider cluster
+    ("8pt_tight", 8,  0.03, 1.5),  # 8 points, tight dense
+    ("8pt_wide",  8,  0.10, 3.0),  # 8 points, wider spread
+    ("12pt_sph",  12, 0.15, 4.0),  # 12 points, large sphere
 ]
+
+# -------------------------------------------------------------------
+# FOV RULER EXTENSION
+# -------------------------------------------------------------------
+# How many pixels past the projector resolution bounds the ruler ticks
+# extend in the perpendicular direction.  Makes ruler ticks visible
+# outside the projected area so you can read angles beyond the cone.
+RULER_EXTEND_PX = 30
+
+# -------------------------------------------------------------------
+# 2D-3D MAPPING EXPORT
+# -------------------------------------------------------------------
+MAPPING_EXPORT_PATH = "C:/Users/johnh/Downloads/projector_mapping.json"
+
+# -------------------------------------------------------------------
+# CALIBRATION VERIFICATION IMAGE
+# -------------------------------------------------------------------
+# Generates a projector image showing all active pixel positions and
+# adds it to the Blender scene as a camera background for verification.
+GENERATE_CALIB_VERIFY_IMAGE = True
+CALIB_VERIFY_IMAGE_PATH = "C:/Users/johnh/Downloads/CalibrationVerify.png"
 
 # -------------------------------------------------------------------
 # GLASS / OPTICS
@@ -426,7 +453,8 @@ def build_ray_tracer(scene, camera, cube):
 
     Traces ray from camera through pixel (pix_x, pix_y) at 1280x720,
     refracts at glass surface, returns point at depth_factor (0=front,
-    1=back) within the inner safe zone.
+    1=back) within the inner safe zone.  pix_x/pix_y may be floats
+    for sub-pixel addressing.
     """
     for poly in cube.data.polygons:
         poly.use_smooth = False
@@ -499,15 +527,7 @@ def build_ray_tracer(scene, camera, cube):
 # FOV-TO-PIXEL CONVERSION
 # -------------------------------------------------------------------
 def hfov_to_pixel_x(hfov_deg, camera_hfov_deg, window_px=None):
-    """Pixel column in camera space where the measurement edge falls.
-
-    Full frame (window_px=RES_X): edge of projector's cone for HFOV hfov_deg.
-    Windowed (window_px<RES_X): edge of calibration window for HFOV hfov_deg.
-
-    The window edge half-angle for a projector with HFOV F and a
-    centered window of W pixels is: atan(tan(F/2) * W / RES_X).
-    When W=RES_X this simplifies to F/2 (original formula).
-    """
+    """Pixel column in camera space where the measurement edge falls."""
     if window_px is None:
         window_px = RES_X
     half_angle = math.radians(hfov_deg / 2.0)
@@ -548,15 +568,22 @@ def get_projector_pixel_bounds(cam_hfov, cam_vfov):
     py_top = RES_Y - py_bottom
     return px_left, px_right, py_top, py_bottom
 
+def proj_to_cam(proj_px, proj_py, px_left, px_right, py_top, py_bottom):
+    """Convert projector pixel coordinates to camera pixel coordinates.
+
+    Projector pixel (0, 0) maps to camera pixel (px_left, py_top).
+    Projector pixel (RES_X-1, RES_Y-1) maps to (px_right, py_bottom).
+    Accepts float inputs for sub-pixel addressing.
+    """
+    cam_x = px_left + (px_right - px_left) * proj_px / (RES_X - 1)
+    cam_y = py_top + (py_bottom - py_top) * proj_py / (RES_Y - 1)
+    return cam_x, cam_y
+
 # -------------------------------------------------------------------
 # PART 1: FOV MEASUREMENT RULER
 # -------------------------------------------------------------------
 def get_glass_angular_extent(camera, cube):
-    """Compute the full H and V FOV the glass block subtends from the camera.
-
-    Returns (hfov_deg, vfov_deg, nearest_face_dist).
-    In camera space: -Z = forward, X = right, Y = up.
-    """
+    """Compute the full H and V FOV the glass block subtends from the camera."""
     cam_inv = camera.matrix_world.inverted()
     bb_cam = [cam_inv @ (cube.matrix_world @ Vector(c)) for c in cube.bound_box]
 
@@ -575,19 +602,13 @@ def get_glass_angular_extent(camera, cube):
     return hfov, vfov, min_depth
 
 def generate_calibration_image(filepath, window_x, window_y):
-    """Generate a calibration PNG: centered white rectangle on black.
-
-    The sharp edges of the white rectangle create the lit/dark boundary
-    for reading the FOV ruler. The projector displays this image instead
-    of full white.
-    """
+    """Generate a calibration PNG: centered white rectangle on black."""
     name = "FOV_CalibImage"
     img = bpy.data.images.get(name)
     if img:
         bpy.data.images.remove(img)
     img = bpy.data.images.new(name, RES_X, RES_Y, alpha=False)
 
-    # Build pixel buffer (RGBA, bottom-to-top row order in Blender)
     pixels = [0.0, 0.0, 0.0, 1.0] * (RES_X * RES_Y)
 
     x_start = (RES_X - window_x) // 2
@@ -598,9 +619,9 @@ def generate_calibration_image(filepath, window_x, window_y):
     for y in range(y_start, y_end):
         for x in range(x_start, x_end):
             idx = (y * RES_X + x) * 4
-            pixels[idx]     = 1.0  # R
-            pixels[idx + 1] = 1.0  # G
-            pixels[idx + 2] = 1.0  # B
+            pixels[idx]     = 1.0
+            pixels[idx + 1] = 1.0
+            pixels[idx + 2] = 1.0
 
     img.pixels = pixels
     img.filepath_raw = filepath
@@ -611,14 +632,7 @@ def generate_calibration_image(filepath, window_x, window_y):
     print(f"  White window: {window_x}x{window_y} centered in {RES_X}x{RES_Y}")
 
 def get_tick_height(fov_rounded):
-    """Tick height based on sub-degree value.
-
-    .0 → TICK_HEIGHT_WHOLE (40px) — tallest landmark
-    .5 → TICK_HEIGHT_HALF  (28px) — mid landmark
-    else → TICK_HEIGHT_TENTH (14px) — short
-
-    Between any two landmarks there are max 4 short ticks.
-    """
+    """Tick height based on sub-degree value."""
     tenths = round((fov_rounded - int(fov_rounded)) * 10) % 10
     if tenths == 0:
         return TICK_HEIGHT_WHOLE
@@ -630,17 +644,11 @@ def get_tick_height(fov_rounded):
 def generate_fov_ruler(trace):
     """Generate height-encoded tick marks for FOV measurement.
 
-    Supports two modes controlled by CALIB_WINDOW_FRACTION:
-
-    Full frame (1.0): Ticks at positions where the projector's cone
-    edge falls. Project full white, read the last glowing tick.
-
-    Windowed (<1.0): Ticks at positions where the calibration window
-    edge falls. Project the generated calibration PNG, read the last
-    glowing tick. Works with any block size at any distance.
-
-    Both modes: tick labels are real HFOV/VFOV values, read them
-    the same way. Height encodes the tenths digit.
+    Each tick sweeps depth from RULER_DEPTH_FRONT to RULER_DEPTH_BACK
+    along its length, making it a 3D line rather than a flat mark.
+    This ensures projector positioning errors (distance, tilt) don't
+    corrupt the FOV reading — the last glowing tick is determined
+    purely by the projector's cone angle, not its position.
     """
     scene = bpy.context.scene
     cam = scene.camera
@@ -668,14 +676,13 @@ def generate_fov_ruler(trace):
         print(f"WARNING: Camera VFOV ({cam_vfov:.1f} deg) too narrow "
               f"for V ruler max pixel {max_v_pixel:.0f}")
 
-    # Validate glass subtends enough angle for the tick positions
+    # Validate glass subtends enough angle
     cube = bpy.data.objects.get(CUBE_NAME)
     glass_hfov, glass_vfov, glass_dist = get_glass_angular_extent(cam, cube)
     print(f"Camera: HFOV={cam_hfov:.2f} deg, VFOV={cam_vfov:.2f} deg")
     print(f"Glass subtends {glass_hfov:.1f} x {glass_vfov:.1f} deg "
           f"({glass_dist/BLOCK_UNIT_SCALE:.1f}mm away)")
 
-    # Compute the max angular extent needed for ticks
     h_edge_max = math.degrees(2.0 * math.atan(
         math.tan(math.radians(HFOV_MAX_DEG / 2.0)) * win_px / RES_X))
     v_edge_max = math.degrees(2.0 * math.atan(
@@ -689,7 +696,6 @@ def generate_fov_ruler(trace):
         print(f"\n  H ticks need {h_edge_max:.1f} deg but glass covers "
               f"{glass_hfov:.1f} deg.")
         if windowed:
-            # Suggest a smaller window fraction
             safe_frac = glass_hfov / HFOV_MAX_DEG
             print(f"  Try CALIB_WINDOW_FRACTION = {safe_frac:.2f} or smaller")
         else:
@@ -717,6 +723,10 @@ def generate_fov_ruler(trace):
     x_center = RES_X // 2
 
     # === HORIZONTAL FOV RULER (vertical ticks at Y midline) ===
+    # Height-encoded ticks centered at midline. The ruler naturally
+    # extends past the projector resolution because HFOV_MAX_DEG >
+    # PROJECTOR_HFOV_DEG — ticks beyond the projector's cone angle
+    # exist but won't glow, which is how you read the FOV.
     fov = HFOV_MIN_DEG
     while fov <= HFOV_MAX_DEG + 0.001:
         fov_rounded = round(fov, 1)
@@ -724,24 +734,26 @@ def generate_fov_ruler(trace):
         half_h = tick_h // 2
 
         px_right = hfov_to_pixel_x(fov_rounded, cam_hfov, win_px)
-        px_left = RES_X - px_right  # Mirror
+        px_left = RES_X - px_right
 
         y_start = max(0, y_center - half_h)
         y_end = min(RES_Y - 1, y_center + half_h)
 
-        # Right-side tick
         ix_r = int(round(px_right))
         if 0 <= ix_r < RES_X:
             for y in range(y_start, y_end + 1):
-                pt = trace(ix_r, y)
+                t = (y - y_start) / max(1, y_end - y_start)
+                d = RULER_DEPTH_FRONT + (RULER_DEPTH_BACK - RULER_DEPTH_FRONT) * t
+                pt = trace(ix_r, y, d)
                 if pt:
                     points.append(pt)
 
-        # Left-side tick (mirror)
         ix_l = int(round(px_left))
         if 0 <= ix_l < RES_X:
             for y in range(y_start, y_end + 1):
-                pt = trace(ix_l, y)
+                t = (y - y_start) / max(1, y_end - y_start)
+                d = RULER_DEPTH_FRONT + (RULER_DEPTH_BACK - RULER_DEPTH_FRONT) * t
+                pt = trace(ix_l, y, d)
                 if pt:
                     points.append(pt)
 
@@ -755,38 +767,48 @@ def generate_fov_ruler(trace):
         half_w = tick_w // 2
 
         py_bottom = vfov_to_pixel_y(fov_rounded, cam_vfov, win_py)
-        py_top = RES_Y - py_bottom  # Mirror
+        py_top = RES_Y - py_bottom
 
         x_start = max(0, x_center - half_w)
         x_end = min(RES_X - 1, x_center + half_w)
 
-        # Bottom-side tick
         iy_b = int(round(py_bottom))
         if 0 <= iy_b < RES_Y:
             for x in range(x_start, x_end + 1):
-                pt = trace(x, iy_b)
+                t = (x - x_start) / max(1, x_end - x_start)
+                d = RULER_DEPTH_FRONT + (RULER_DEPTH_BACK - RULER_DEPTH_FRONT) * t
+                pt = trace(x, iy_b, d)
                 if pt:
                     points.append(pt)
 
-        # Top-side tick (mirror)
         iy_t = int(round(py_top))
         if 0 <= iy_t < RES_Y:
             for x in range(x_start, x_end + 1):
-                pt = trace(x, iy_t)
+                t = (x - x_start) / max(1, x_end - x_start)
+                d = RULER_DEPTH_FRONT + (RULER_DEPTH_BACK - RULER_DEPTH_FRONT) * t
+                pt = trace(x, iy_t, d)
                 if pt:
                     points.append(pt)
 
         fov = round(fov + VFOV_STEP_DEG, 1)
 
-    # === CENTER REFERENCE CROSSHAIR ===
-    for y in range(y_center - CENTER_CROSS_LEN, y_center + CENTER_CROSS_LEN + 1):
+    # === CENTER REFERENCE CROSSHAIR (with depth sweep) ===
+    ch_y_start = y_center - CENTER_CROSS_LEN
+    ch_y_end = y_center + CENTER_CROSS_LEN
+    for y in range(ch_y_start, ch_y_end + 1):
         if 0 <= y < RES_Y:
-            pt = trace(x_center, y)
+            t = (y - ch_y_start) / max(1, ch_y_end - ch_y_start)
+            d = RULER_DEPTH_FRONT + (RULER_DEPTH_BACK - RULER_DEPTH_FRONT) * t
+            pt = trace(x_center, y, d)
             if pt:
                 points.append(pt)
-    for x in range(x_center - CENTER_CROSS_LEN, x_center + CENTER_CROSS_LEN + 1):
+    ch_x_start = x_center - CENTER_CROSS_LEN
+    ch_x_end = x_center + CENTER_CROSS_LEN
+    for x in range(ch_x_start, ch_x_end + 1):
         if 0 <= x < RES_X:
-            pt = trace(x, y_center)
+            t = (x - ch_x_start) / max(1, ch_x_end - ch_x_start)
+            d = RULER_DEPTH_FRONT + (RULER_DEPTH_BACK - RULER_DEPTH_FRONT) * t
+            pt = trace(x, y_center, d)
             if pt:
                 points.append(pt)
 
@@ -796,24 +818,12 @@ def generate_fov_ruler(trace):
 # -------------------------------------------------------------------
 # PART 2: ALIGNMENT CALIBRATION
 # -------------------------------------------------------------------
-def straight_line_3d(p_start, p_end, steps):
-    """Linearly interpolate between two 3D points. Returns list of Vectors."""
-    pts = []
-    for i in range(steps + 1):
-        t = i / steps
-        pts.append(p_start.lerp(p_end, t))
-    return pts
-
 def generate_alignment_pattern(trace):
     """Generate alignment calibration pattern mapped to projector FOV.
 
     Border and all features map to the projector's actual edge pixels at
-    PROJECTOR_HFOV_DEG, not the Blender camera edges. The Blender camera
-    can be set wider (e.g. for the FOV ruler) while the alignment pattern
-    accurately represents where the projector's pixels actually fall.
-
-    All on-plane features at depth_factor=0.5 (midpoint of safe zone).
-    Border uses 3D endpoint interpolation for guaranteed straight lines.
+    PROJECTOR_HFOV_DEG, not the Blender camera edges. The border leaves
+    gaps where the FOV ruler ticks cross so the ruler stays visible.
     """
     scene = bpy.context.scene
     cam = scene.camera
@@ -840,97 +850,120 @@ def generate_alignment_pattern(trace):
     inset = ALIGNMENT_INSET_PX
     d = 0.5  # Single depth for all on-plane features
 
-    # Projector FOV edge pixel bounds in camera space (with inset)
-    x_min = max(0, int(round(px_left)) + inset)
-    x_max = min(RES_X - 1, int(round(px_right)) - inset)
-    y_min = max(0, int(round(py_top)) + inset)
-    y_max = min(RES_Y - 1, int(round(py_bottom)) - inset)
+    # All features use projector pixel coordinates via proj_to_cam().
+    # This ensures every fracture point maps to an integer projector pixel.
+    p2c = lambda ppx, ppy: proj_to_cam(ppx, ppy, px_left, px_right,
+                                        py_top, py_bottom)
 
-    cx = (x_min + x_max) // 2
-    cy = (y_min + y_max) // 2
+    # Projector pixel bounds (with inset)
+    proj_x_min = inset
+    proj_x_max = RES_X - 1 - inset
+    proj_y_min = inset
+    proj_y_max = RES_Y - 1 - inset
+    proj_cx = RES_X // 2
+    proj_cy = RES_Y // 2
 
-    # === 1. CORNER FILLED CIRCLES ===
+    # === 1. CORNER POINTS (projector pixel space) ===
     corners = [
-        (x_min, y_min),
-        (x_max, y_min),
-        (x_min, y_max),
-        (x_max, y_max),
+        (proj_x_min, proj_y_min),
+        (proj_x_max, proj_y_min),
+        (proj_x_min, proj_y_max),
+        (proj_x_max, proj_y_max),
     ]
-    for corner_x, corner_y in corners:
-        r = CORNER_RADIUS_PX
-        for dy in range(-r, r + 1):
-            for dx in range(-r, r + 1):
-                if dx * dx + dy * dy <= r * r:
-                    px = corner_x + dx
-                    py = corner_y + dy
-                    if 0 <= px < RES_X and 0 <= py < RES_Y:
-                        pt = trace(px, py, d)
-                        if pt:
-                            points.append(pt)
-
-    # === 2. CENTER CROSSHAIR ===
-    for y in range(cy - CROSSHAIR_LEN_PX, cy + CROSSHAIR_LEN_PX + 1):
-        if 0 <= y < RES_Y:
-            pt = trace(cx, y, d)
-            if pt:
-                points.append(pt)
-    for x in range(cx - CROSSHAIR_LEN_PX, cx + CROSSHAIR_LEN_PX + 1):
-        if 0 <= x < RES_X:
-            pt = trace(x, cy, d)
+    for corner_px, corner_py in corners:
+        if 0 <= corner_px < RES_X and 0 <= corner_py < RES_Y:
+            cam_x, cam_y = p2c(corner_px, corner_py)
+            pt = trace(cam_x, cam_y, d)
             if pt:
                 points.append(pt)
 
-    # === 3. EDGE MIDPOINT MARKERS ===
-    for y in range(y_min, y_min + EDGE_TICK_LEN_PX):
-        pt = trace(cx, y, d)
-        if pt:
-            points.append(pt)
-    for y in range(y_max - EDGE_TICK_LEN_PX + 1, y_max + 1):
-        pt = trace(cx, y, d)
-        if pt:
-            points.append(pt)
-    for x in range(x_min, x_min + EDGE_TICK_LEN_PX):
-        pt = trace(x, cy, d)
-        if pt:
-            points.append(pt)
-    for x in range(x_max - EDGE_TICK_LEN_PX + 1, x_max + 1):
-        pt = trace(x, cy, d)
-        if pt:
-            points.append(pt)
+    # === 2. CENTER CROSSHAIR (projector pixel space) ===
+    for ppy in range(proj_cy - CROSSHAIR_LEN_PX,
+                     proj_cy + CROSSHAIR_LEN_PX + 1):
+        if 0 <= ppy < RES_Y:
+            cam_x, cam_y = p2c(proj_cx, ppy)
+            pt = trace(cam_x, cam_y, d)
+            if pt:
+                points.append(pt)
+    for ppx in range(proj_cx - CROSSHAIR_LEN_PX,
+                     proj_cx + CROSSHAIR_LEN_PX + 1):
+        if 0 <= ppx < RES_X:
+            cam_x, cam_y = p2c(ppx, proj_cy)
+            pt = trace(cam_x, cam_y, d)
+            if pt:
+                points.append(pt)
 
-    # === 4. BORDER RECTANGLE (straight lines in 3D) ===
-    # Trace 4 corners, then interpolate in world space.
-    # This guarantees straight lines regardless of refraction curvature.
-    c_tl = trace(x_min, y_min, d)
-    c_tr = trace(x_max, y_min, d)
-    c_bl = trace(x_min, y_max, d)
-    c_br = trace(x_max, y_max, d)
+    # === 3. EDGE MIDPOINT MARKERS (projector pixel space) ===
+    for ppy in range(proj_y_min, proj_y_min + EDGE_TICK_LEN_PX):
+        cam_x, cam_y = p2c(proj_cx, ppy)
+        pt = trace(cam_x, cam_y, d)
+        if pt: points.append(pt)
+    for ppy in range(proj_y_max - EDGE_TICK_LEN_PX + 1, proj_y_max + 1):
+        cam_x, cam_y = p2c(proj_cx, ppy)
+        pt = trace(cam_x, cam_y, d)
+        if pt: points.append(pt)
+    for ppx in range(proj_x_min, proj_x_min + EDGE_TICK_LEN_PX):
+        cam_x, cam_y = p2c(ppx, proj_cy)
+        pt = trace(cam_x, cam_y, d)
+        if pt: points.append(pt)
+    for ppx in range(proj_x_max - EDGE_TICK_LEN_PX + 1, proj_x_max + 1):
+        cam_x, cam_y = p2c(ppx, proj_cy)
+        pt = trace(cam_x, cam_y, d)
+        if pt: points.append(pt)
 
-    if c_tl and c_tr and c_bl and c_br:
-        n = BORDER_LINE_STEPS
-        border_points.extend(straight_line_3d(c_tl, c_tr, n))  # Top
-        border_points.extend(straight_line_3d(c_bl, c_br, n))  # Bottom
-        border_points.extend(straight_line_3d(c_tl, c_bl, n))  # Left
-        border_points.extend(straight_line_3d(c_tr, c_br, n))  # Right
-    else:
-        print("WARNING: Could not trace all 4 border corners")
+    # === 4. BORDER RECTANGLE (projector pixel space, with ruler gaps) ===
+    # Every BORDER_PIXEL_STEP-th projector pixel along each edge.
+    gap = RULER_GAP_MARGIN
 
-    # === 5. SPARSE ALIGNMENT GRID ===
+    # Ruler exclusion zones in projector pixel space
+    ruler_py_top = proj_cy - TICK_HEIGHT_WHOLE // 2 - gap
+    ruler_py_bot = proj_cy + TICK_HEIGHT_WHOLE // 2 + gap
+    ruler_px_left = proj_cx - TICK_HEIGHT_WHOLE // 2 - gap
+    ruler_px_right = proj_cx + TICK_HEIGHT_WHOLE // 2 + gap
+
+    # Top edge
+    for ppx in range(proj_x_min, proj_x_max + 1, BORDER_PIXEL_STEP):
+        if ruler_px_left <= ppx <= ruler_px_right:
+            continue
+        cam_x, cam_y = p2c(ppx, proj_y_min)
+        pt = trace(cam_x, cam_y, d)
+        if pt: border_points.append(pt)
+
+    # Bottom edge
+    for ppx in range(proj_x_min, proj_x_max + 1, BORDER_PIXEL_STEP):
+        if ruler_px_left <= ppx <= ruler_px_right:
+            continue
+        cam_x, cam_y = p2c(ppx, proj_y_max)
+        pt = trace(cam_x, cam_y, d)
+        if pt: border_points.append(pt)
+
+    # Left edge
+    for ppy in range(proj_y_min, proj_y_max + 1, BORDER_PIXEL_STEP):
+        if ruler_py_top <= ppy <= ruler_py_bot:
+            continue
+        cam_x, cam_y = p2c(proj_x_min, ppy)
+        pt = trace(cam_x, cam_y, d)
+        if pt: border_points.append(pt)
+
+    # Right edge
+    for ppy in range(proj_y_min, proj_y_max + 1, BORDER_PIXEL_STEP):
+        if ruler_py_top <= ppy <= ruler_py_bot:
+            continue
+        cam_x, cam_y = p2c(proj_x_max, ppy)
+        pt = trace(cam_x, cam_y, d)
+        if pt: border_points.append(pt)
+
+    # === 5. SPARSE ALIGNMENT GRID (projector pixel space) ===
     if GRID_ENABLED:
         for col in range(1, GRID_COLS):
             for row in range(1, GRID_ROWS):
-                gx = int(x_min + (x_max - x_min) * col / GRID_COLS)
-                gy = int(y_min + (y_max - y_min) * row / GRID_ROWS)
-                r = GRID_DOT_RADIUS_PX
-                for dy in range(-r, r + 1):
-                    for dx in range(-r, r + 1):
-                        if dx * dx + dy * dy <= r * r:
-                            px = gx + dx
-                            py = gy + dy
-                            if 0 <= px < RES_X and 0 <= py < RES_Y:
-                                pt = trace(px, py, d)
-                                if pt:
-                                    points.append(pt)
+                proj_gx = int(RES_X * col / GRID_COLS)
+                proj_gy = int(RES_Y * row / GRID_ROWS)
+                if 0 <= proj_gx < RES_X and 0 <= proj_gy < RES_Y:
+                    cam_x, cam_y = p2c(proj_gx, proj_gy)
+                    pt = trace(cam_x, cam_y, d)
+                    if pt:
+                        points.append(pt)
 
     print(f"Alignment: {len(points)} feature pts + "
           f"{len(border_points)} border pts")
@@ -942,15 +975,9 @@ def generate_alignment_pattern(trace):
 def generate_depth_probes(trace):
     """Generate off-plane verification points for FOV confirmation.
 
-    If all calibration points are coplanar (same depth), any FOV will
-    work if you position the projector at the right distance. But
-    depth-varied points introduce parallax: a wrong-FOV projector can
-    match the on-plane grid dots by adjusting distance, but the off-plane
-    probes will shift laterally. Only the correct FOV illuminates everything.
-
-    Probes are placed at pixel locations between alignment grid dots,
-    at alternating front/back depths in a checkerboard pattern. Points
-    near the frame edges have the strongest parallax sensitivity.
+    All probes use projector pixel coordinates so every fracture point
+    maps to a specific projector pixel.  Probes are placed between
+    alignment grid dots at alternating front/back depths.
     """
     scene = bpy.context.scene
     cam = scene.camera
@@ -959,105 +986,76 @@ def generate_depth_probes(trace):
 
     px_left, px_right, py_top, py_bottom = get_projector_pixel_bounds(
         cam_hfov, cam_vfov)
+    p2c = lambda ppx, ppy: proj_to_cam(ppx, ppy, px_left, px_right,
+                                        py_top, py_bottom)
     inset = ALIGNMENT_INSET_PX
-    x_min = max(0, int(round(px_left)) + inset)
-    x_max = min(RES_X - 1, int(round(px_right)) - inset)
-    y_min = max(0, int(round(py_top)) + inset)
-    y_max = min(RES_Y - 1, int(round(py_bottom)) - inset)
 
     points = []
     probe_idx = 0
-    r = DEPTH_PROBE_RADIUS_PX
 
     if not GRID_ENABLED:
         print("Depth probes require GRID_ENABLED=True — skipping")
         return points
 
-    # Compute grid positions (same as alignment pattern)
-    grid_xs = [int(x_min + (x_max - x_min) * col / GRID_COLS)
-               for col in range(1, GRID_COLS)]
-    grid_ys = [int(y_min + (y_max - y_min) * row / GRID_ROWS)
-               for row in range(1, GRID_ROWS)]
+    # Grid positions in projector pixel space (same as alignment)
+    grid_pxs = [int(RES_X * col / GRID_COLS) for col in range(1, GRID_COLS)]
+    grid_pys = [int(RES_Y * row / GRID_ROWS) for row in range(1, GRID_ROWS)]
 
     # --- Probes between horizontally adjacent grid dots ---
-    for gy in grid_ys:
-        for col_idx in range(len(grid_xs) - 1):
-            mid_x = (grid_xs[col_idx] + grid_xs[col_idx + 1]) // 2
+    for gpy in grid_pys:
+        for col_idx in range(len(grid_pxs) - 1):
+            mid_px = (grid_pxs[col_idx] + grid_pxs[col_idx + 1]) // 2
             depth = DEPTH_FRONT if (probe_idx % 2 == 0) else DEPTH_BACK
             probe_idx += 1
-
-            for dy in range(-r, r + 1):
-                for dx in range(-r, r + 1):
-                    if dx * dx + dy * dy <= r * r:
-                        px = mid_x + dx
-                        py = gy + dy
-                        if 0 <= px < RES_X and 0 <= py < RES_Y:
-                            pt = trace(px, py, depth)
-                            if pt:
-                                points.append(pt)
+            if 0 <= mid_px < RES_X and 0 <= gpy < RES_Y:
+                cam_x, cam_y = p2c(mid_px, gpy)
+                pt = trace(cam_x, cam_y, depth)
+                if pt: points.append(pt)
 
     # --- Probes between vertically adjacent grid dots ---
-    for gx in grid_xs:
-        for row_idx in range(len(grid_ys) - 1):
-            mid_y = (grid_ys[row_idx] + grid_ys[row_idx + 1]) // 2
+    for gpx in grid_pxs:
+        for row_idx in range(len(grid_pys) - 1):
+            mid_py = (grid_pys[row_idx] + grid_pys[row_idx + 1]) // 2
             depth = DEPTH_BACK if (probe_idx % 2 == 0) else DEPTH_FRONT
             probe_idx += 1
+            if 0 <= gpx < RES_X and 0 <= mid_py < RES_Y:
+                cam_x, cam_y = p2c(gpx, mid_py)
+                pt = trace(cam_x, cam_y, depth)
+                if pt: points.append(pt)
 
-            for dy in range(-r, r + 1):
-                for dx in range(-r, r + 1):
-                    if dx * dx + dy * dy <= r * r:
-                        px = gx + dx
-                        py = mid_y + dy
-                        if 0 <= px < RES_X and 0 <= py < RES_Y:
-                            pt = trace(px, py, depth)
-                            if pt:
-                                points.append(pt)
-
-    # --- Corner depth probes (strongest parallax at frame edges) ---
-    # Place probes near each corner but slightly inward, at opposite depth
+    # --- Corner depth probes (projector pixel space) ---
     corner_offset = CORNER_RADIUS_PX + 8
     corner_probes = [
-        (x_min + corner_offset, y_min + corner_offset, DEPTH_FRONT),
-        (x_max - corner_offset, y_min + corner_offset, DEPTH_BACK),
-        (x_min + corner_offset, y_max - corner_offset, DEPTH_BACK),
-        (x_max - corner_offset, y_max - corner_offset, DEPTH_FRONT),
+        (inset + corner_offset, inset + corner_offset, DEPTH_FRONT),
+        (RES_X - 1 - inset - corner_offset, inset + corner_offset, DEPTH_BACK),
+        (inset + corner_offset, RES_Y - 1 - inset - corner_offset, DEPTH_BACK),
+        (RES_X - 1 - inset - corner_offset,
+         RES_Y - 1 - inset - corner_offset, DEPTH_FRONT),
     ]
     for cpx, cpy, depth in corner_probes:
         probe_idx += 1
-        for dy in range(-r, r + 1):
-            for dx in range(-r, r + 1):
-                if dx * dx + dy * dy <= r * r:
-                    px = cpx + dx
-                    py = cpy + dy
-                    if 0 <= px < RES_X and 0 <= py < RES_Y:
-                        pt = trace(px, py, depth)
-                        if pt:
-                            points.append(pt)
+        if 0 <= cpx < RES_X and 0 <= cpy < RES_Y:
+            cam_x, cam_y = p2c(cpx, cpy)
+            pt = trace(cam_x, cam_y, depth)
+            if pt: points.append(pt)
 
-    # --- Edge midpoint depth probes ---
-    cx = (x_min + x_max) // 2
-    cy = (y_min + y_max) // 2
+    # --- Edge midpoint depth probes (projector pixel space) ---
+    pcx = RES_X // 2
+    pcy = RES_Y // 2
     edge_offset = EDGE_TICK_LEN_PX + 5
     edge_probes = [
-        (cx, y_min + edge_offset, DEPTH_FRONT),   # Top-center
-        (cx, y_max - edge_offset, DEPTH_BACK),     # Bottom-center
-        (x_min + edge_offset, cy, DEPTH_FRONT),    # Left-center
-        (x_max - edge_offset, cy, DEPTH_BACK),     # Right-center
+        (pcx, inset + edge_offset, DEPTH_FRONT),
+        (pcx, RES_Y - 1 - inset - edge_offset, DEPTH_BACK),
+        (inset + edge_offset, pcy, DEPTH_FRONT),
+        (RES_X - 1 - inset - edge_offset, pcy, DEPTH_BACK),
     ]
     for epx, epy, depth in edge_probes:
         probe_idx += 1
-        for dy in range(-r, r + 1):
-            for dx in range(-r, r + 1):
-                if dx * dx + dy * dy <= r * r:
-                    px = epx + dx
-                    py = epy + dy
-                    if 0 <= px < RES_X and 0 <= py < RES_Y:
-                        pt = trace(px, py, depth)
-                        if pt:
-                            points.append(pt)
+        if 0 <= epx < RES_X and 0 <= epy < RES_Y:
+            cam_x, cam_y = p2c(epx, epy)
+            pt = trace(cam_x, cam_y, depth)
+            if pt: points.append(pt)
 
-    n_front = sum(1 for i in range(probe_idx)
-                  if i % 2 == 0)  # approximate
     print(f"Depth probes: {len(points)} pts across {probe_idx} probes "
           f"(d={DEPTH_FRONT} front, d={DEPTH_BACK} back)")
     return points
@@ -1066,66 +1064,151 @@ def generate_depth_probes(trace):
 # VOLUMETRIC TEST REGIONS
 # -------------------------------------------------------------------
 def generate_vol_test_regions(trace):
-    """Generate small volumetric display test regions near HFOV ruler ticks.
+    """Generate volumetric display test patches across the projector's H FOV.
 
-    For each HFOV step (at VOL_TEST_HFOV_STEP intervals), creates a small
-    patch of depth-distributed points. This lets you see what the volumetric
-    display effect looks like at different angles across the projector's FOV.
+    Regions span from VOL_TEST_GAP_PX above the bottom VFOV ruler to
+    VOL_TEST_GAP_PX above the top VFOV ruler, giving a tall vertical
+    extent.  Each region is VOL_TEST_SIZE_PX wide (in projector pixels)
+    and the full vertical span, traced at every VOL_TEST_PIXEL_STEP
+    pixels with VOL_TEST_PPR points per ray at random depth.
 
-    Different parts of the FOV have different refraction angles, so the
-    volumetric quality may vary. Testing at multiple positions reveals
-    angle-dependent effects.
+    All points use projector pixel coordinates.  Each region records
+    its 2D->3D mapping: {(proj_px, proj_py): (world_x, world_y, world_z)}.
+    Alignment dots and depth probes are placed between adjacent regions.
+    Each region is labeled with its HFOV angle via tick-mark indicators.
+
+    Returns (points, inter_points, mapping) where mapping is the full
+    projector-pixel to world-point dictionary.
     """
     scene = bpy.context.scene
     cam = scene.camera
     cam_hfov = get_camera_hfov(scene, cam)
+    cam_vfov = get_camera_vfov(scene, cam)
 
+    px_left, px_right, py_top, py_bottom = get_projector_pixel_bounds(
+        cam_hfov, cam_vfov)
+    p2c = lambda ppx, ppy: proj_to_cam(ppx, ppy, px_left, px_right,
+                                        py_top, py_bottom)
+
+    # Compute vertical extent in camera pixel space, then convert
+    # back to projector pixel bounds.
     wf = CALIB_WINDOW_FRACTION
-    win_px = int(round(RES_X * wf))
+    win_py = int(round(RES_Y * wf))
 
-    y_center = RES_Y // 2
-    patch_offset_y = TICK_HEIGHT_WHOLE + 10  # Below the ruler tick
+    # Bottom VFOV ruler innermost tick (closest to center, below center)
+    bottom_ruler_cam_y = int(vfov_to_pixel_y(VFOV_MIN_DEG, cam_vfov, win_py))
+    # Top VFOV ruler innermost tick (closest to center, above center)
+    top_ruler_cam_y = int(RES_Y - vfov_to_pixel_y(VFOV_MIN_DEG, cam_vfov, win_py))
 
+    # Convert camera Y to approximate projector Y
+    # cam_y = py_top + (py_bottom - py_top) * proj_y / (RES_Y - 1)
+    # => proj_y = (cam_y - py_top) / (py_bottom - py_top) * (RES_Y - 1)
+    def cam_y_to_proj_y(cam_y):
+        if abs(py_bottom - py_top) < 0.001:
+            return RES_Y // 2
+        return int((cam_y - py_top) / (py_bottom - py_top) * (RES_Y - 1))
+
+    # Region projector Y bounds: GAP above each ruler
+    proj_y_bottom = cam_y_to_proj_y(bottom_ruler_cam_y) - VOL_TEST_GAP_PX
+    proj_y_top = cam_y_to_proj_y(top_ruler_cam_y) - VOL_TEST_GAP_PX
+    # Clamp to valid projector pixel range
+    proj_y_top = max(0, proj_y_top)
+    proj_y_bottom = min(RES_Y - 1, proj_y_bottom)
+
+    sz = VOL_TEST_SIZE_PX
+    step = VOL_TEST_PIXEL_STEP
+    n_regions = VOL_TEST_N_REGIONS
     points = []
-    n_regions = 0
+    inter_points = []  # Alignment + depth probes between regions
+    mapping = {}       # (proj_px, proj_py) -> (x, y, z) world coords
 
-    fov = HFOV_MIN_DEG
-    while fov <= HFOV_MAX_DEG + 0.001:
-        fov_rounded = round(fov, 1)
+    # Compute HFOV angle for each region
+    region_infos = []
+    for i in range(n_regions):
+        x_frac = (i + 1.0) / (n_regions + 1.0)
+        proj_cx = int(RES_X * x_frac)
+        # Angle from center: tan(a) = (frac - 0.5)*2 * tan(HFOV/2)
+        angle_from_center = math.degrees(math.atan(
+            (x_frac - 0.5) * 2.0 *
+            math.tan(math.radians(PROJECTOR_HFOV_DEG / 2.0))))
+        hfov_at = abs(angle_from_center) * 2.0
+        region_infos.append((proj_cx, angle_from_center, hfov_at))
 
-        # Only place test regions at VOL_TEST_HFOV_STEP intervals
-        # Check if this fov_rounded is on a step boundary
-        steps_from_min = (fov_rounded - HFOV_MIN_DEG) / VOL_TEST_HFOV_STEP
-        if abs(steps_from_min - round(steps_from_min)) > 0.05:
-            fov = round(fov + HFOV_STEP_DEG, 1)
-            continue
+    height = proj_y_bottom - proj_y_top + 1
+    print(f"Vol test: {n_regions} regions, {2*sz+1}px wide x {height}px tall, "
+          f"step={step}, {VOL_TEST_PPR} PPR")
+    print(f"  Projector Y range: {proj_y_top} to {proj_y_bottom}")
 
-        # Right-side tick pixel position in camera space
-        px_right = hfov_to_pixel_x(fov_rounded, cam_hfov, win_px)
-        ix_center = int(round(px_right))
-        iy_center = y_center + patch_offset_y
+    for i, (proj_cx, angle, hfov) in enumerate(region_infos):
+        region_count = 0
 
-        # Create volumetric patch with multiple depth layers
-        sz = VOL_TEST_SIZE_PX
-        for dx in range(-sz, sz + 1):
-            for dy_px in range(-sz, sz + 1):
-                px = ix_center + dx
-                py = iy_center + dy_px
-                if 0 <= px < RES_X and 0 <= py < RES_Y:
-                    for depth_i in range(VOL_TEST_PPR):
-                        # Evenly distribute across safe zone depth
-                        d = (depth_i + 0.5) / VOL_TEST_PPR
-                        pt = trace(px, py, d)
-                        if pt:
-                            points.append(pt)
+        for ppx in range(proj_cx - sz, proj_cx + sz + 1, step):
+            for ppy in range(proj_y_top, proj_y_bottom + 1, step):
+                if not (0 <= ppx < RES_X and 0 <= ppy < RES_Y):
+                    continue
+                for _ in range(VOL_TEST_PPR):
+                    d = random.uniform(0.05, 0.95)
+                    cam_x, cam_y = p2c(ppx, ppy)
+                    pt = trace(cam_x, cam_y, d)
+                    if pt:
+                        points.append(pt)
+                        # Record mapping (use center depth for mapping)
+                        mapping[(ppx, ppy)] = (pt.x, pt.y, pt.z)
+                        region_count += 1
 
-        n_regions += 1
-        fov = round(fov + HFOV_STEP_DEG, 1)
+        # --- HFOV label: tick marks above region ---
+        # Region number indicator: i+1 horizontal dots above the region
+        label_y = proj_y_top - 3
+        if label_y >= 0:
+            for dot in range(i + 1):
+                lx = proj_cx - (i) + dot * 2
+                if 0 <= lx < RES_X:
+                    cam_x, cam_y = p2c(lx, label_y)
+                    pt = trace(cam_x, cam_y, 0.5)
+                    if pt: inter_points.append(pt)
 
-    print(f"Vol test regions: {n_regions} patches, {len(points)} pts "
-          f"({VOL_TEST_PPR} depths per ray, "
-          f"{2*VOL_TEST_SIZE_PX+1}x{2*VOL_TEST_SIZE_PX+1} px each)")
-    return points
+        # Vertical HFOV connector line from region top to H ruler center
+        # (dashed: every 3rd pixel)
+        ruler_proj_y = RES_Y // 2
+        conn_start = min(proj_y_top, ruler_proj_y)
+        conn_end = max(proj_y_top, ruler_proj_y)
+        for ppy in range(conn_start, conn_end + 1, 3):
+            if 0 <= ppy < RES_Y and 0 <= proj_cx < RES_X:
+                cam_x, cam_y = p2c(proj_cx, ppy)
+                pt = trace(cam_x, cam_y, 0.5)
+                if pt: inter_points.append(pt)
+
+        side = "L" if angle < -0.5 else ("R" if angle > 0.5 else "C")
+        print(f"  Region {i+1}/{n_regions}: proj_x={proj_cx}, "
+              f"angle={angle:+.1f} deg ({side}), "
+              f"HFOV={hfov:.1f} deg, {region_count} pts")
+
+    # --- Alignment dots and depth probes between adjacent regions ---
+    for i in range(n_regions - 1):
+        cx_a = region_infos[i][0]
+        cx_b = region_infos[i + 1][0]
+        mid_px = (cx_a + cx_b) // 2
+        mid_py = (proj_y_top + proj_y_bottom) // 2
+
+        # Alignment point (single point at mid-depth)
+        if 0 <= mid_px < RES_X and 0 <= mid_py < RES_Y:
+            cam_x, cam_y = p2c(mid_px, mid_py)
+            pt = trace(cam_x, cam_y, 0.5)
+            if pt: inter_points.append(pt)
+
+        # Depth probes: single front point above midpoint, single back point below
+        probe_offset = 15
+        for probe_py, depth in [(mid_py - probe_offset, DEPTH_FRONT),
+                                (mid_py + probe_offset, DEPTH_BACK)]:
+            if 0 <= mid_px < RES_X and 0 <= probe_py < RES_Y:
+                cam_x, cam_y = p2c(mid_px, probe_py)
+                pt = trace(cam_x, cam_y, depth)
+                if pt: inter_points.append(pt)
+
+    print(f"Vol test regions: {n_regions} patches, {len(points)} vol pts, "
+          f"{len(inter_points)} inter-region pts, "
+          f"{len(mapping)} mapping entries")
+    return points, inter_points, mapping
 
 # -------------------------------------------------------------------
 # POINT CLUSTERING TESTS
@@ -1134,10 +1217,9 @@ def generate_cluster_tests(trace):
     """Generate test patches with different point clustering densities.
 
     Per Nayar & Anand (Columbia CUCS-030-06, 2006), multiple micro-fractures
-    per voxel increase light scattering. This generates a row of test patches
-    where each pixel has a different number of fracture points with different
-    depth spreads. Project a test pattern to illuminate each patch and compare
-    brightness and diffusion properties empirically.
+    per voxel increase light scattering. Points are randomly distributed in
+    a sphere around each voxel center (not on a grid), using rejection
+    sampling. The sphere has independent depth and lateral (pixel) radii.
 
     Patches are arranged in a row in the lower portion of the projector FOV.
     Each patch has a separator tick above it and a point-count indicator below.
@@ -1171,7 +1253,8 @@ def generate_cluster_tests(trace):
     # Place in lower quarter of projector area
     cy_cluster = y_min + int((y_max - y_min) * 0.75)
 
-    for cfg_idx, (label, n_pts, spread) in enumerate(CLUSTER_CONFIGS):
+    for cfg_idx, (label, n_pts, depth_spread, pixel_spread) in enumerate(
+            CLUSTER_CONFIGS):
         # Patch center pixel in camera space
         patch_cx = start_x + cfg_idx * (patch_width + spacing) + sz
         patch_cy = cy_cluster
@@ -1181,18 +1264,31 @@ def generate_cluster_tests(trace):
             for dy_px in range(-sz, sz + 1):
                 px = patch_cx + dx
                 py = patch_cy + dy_px
-                if 0 <= px < RES_X and 0 <= py < RES_Y:
-                    # Place n_pts clustered around the midpoint depth
-                    for j in range(n_pts):
-                        if n_pts == 1:
-                            d = 0.5
-                        else:
-                            d = 0.5 - spread / 2.0 + spread * j / (n_pts - 1)
+                if not (0 <= px < RES_X and 0 <= py < RES_Y):
+                    continue
+
+                for j in range(n_pts):
+                    if n_pts == 1 or (depth_spread == 0 and pixel_spread == 0):
+                        # Single point, no spread
+                        pt = trace(px, py, 0.5)
+                    else:
+                        # Random point in unit sphere via rejection sampling
+                        while True:
+                            rx = random.uniform(-1, 1)
+                            ry = random.uniform(-1, 1)
+                            rz = random.uniform(-1, 1)
+                            if rx * rx + ry * ry + rz * rz <= 1.0:
+                                break
+                        # Scale to pixel and depth units
+                        target_px = px + rx * pixel_spread
+                        target_py = py + ry * pixel_spread
+                        d = 0.5 + rz * depth_spread / 2.0
                         d = max(0.01, min(0.99, d))
-                        pt = trace(px, py, d)
-                        if pt:
-                            points.append(pt)
-                            patch_count += 1
+                        pt = trace(target_px, target_py, d)
+
+                    if pt:
+                        points.append(pt)
+                        patch_count += 1
 
         # Separator tick above patch for visual identification
         for tick_dy in range(-sz - 6, -sz - 2):
@@ -1203,16 +1299,16 @@ def generate_cluster_tests(trace):
                     points.append(pt)
 
         # Point-count indicator below patch (n_pts horizontal dots)
-        for indicator in range(min(n_pts, 8)):
-            ix = patch_cx - min(n_pts, 8) // 2 + indicator * 2
+        for indicator in range(min(n_pts, 12)):
+            ix = patch_cx - min(n_pts, 12) // 2 + indicator * 2
             iy = patch_cy + sz + 4
             if 0 <= ix < RES_X and 0 <= iy < RES_Y:
                 pt = trace(ix, iy, 0.5)
                 if pt:
                     points.append(pt)
 
-        print(f"  Cluster '{label}': {n_pts}pts x {spread:.2f} spread "
-              f"-> {patch_count} fractures")
+        print(f"  Cluster '{label}': {n_pts}pts, depth={depth_spread:.2f}, "
+              f"lateral={pixel_spread:.1f}px -> {patch_count} fractures")
 
     print(f"Cluster tests: {len(points)} total pts "
           f"across {n_patches} configs")
@@ -1293,12 +1389,16 @@ def generate_calibration():
                                color=(1.0, 0.0, 0.8, 1.0))  # Magenta
         all_points.extend(probe_pts)
 
+    vol_mapping = {}
     if GENERATE_VOL_TEST:
         print("\n--- Volumetric Test Regions ---")
-        vol_pts = generate_vol_test_regions(trace)
+        vol_pts, inter_pts, vol_mapping = generate_vol_test_regions(trace)
         create_obj_from_points(VOL_TEST_NAME, vol_pts,
                                color=(0.0, 1.0, 1.0, 1.0))  # Cyan
+        create_obj_from_points("VolTestInterRegion", inter_pts,
+                               color=(1.0, 0.5, 0.0, 1.0))  # Orange
         all_points.extend(vol_pts)
+        all_points.extend(inter_pts)
 
     if GENERATE_CLUSTER_TEST:
         print("\n--- Point Clustering Tests ---")
@@ -1308,11 +1408,133 @@ def generate_calibration():
                                color=(1.0, 1.0, 1.0, 1.0))  # White
         all_points.extend(cluster_pts)
 
+    # --- Export 2D->3D mapping as JSON ---
+    if vol_mapping:
+        import json
+        mapping_out = {}
+        for (ppx, ppy), (wx, wy, wz) in vol_mapping.items():
+            mapping_out[f"{ppx},{ppy}"] = [wx, wy, wz]
+        try:
+            with open(MAPPING_EXPORT_PATH, 'w') as f:
+                json.dump({
+                    "res_x": RES_X,
+                    "res_y": RES_Y,
+                    "projector_hfov_deg": PROJECTOR_HFOV_DEG,
+                    "ior_outside": IOR_OUTSIDE,
+                    "ior_inside": IOR_INSIDE,
+                    "safe_zone_margin": SAFE_ZONE_MARGIN,
+                    "points": mapping_out,
+                }, f, indent=2)
+            print(f"\n2D->3D mapping exported: {MAPPING_EXPORT_PATH} "
+                  f"({len(mapping_out)} entries)")
+        except Exception as e:
+            print(f"WARNING: Could not write mapping JSON: {e}")
+
+    # --- Generate calibration verification image ---
+    if GENERATE_CALIB_VERIFY_IMAGE:
+        print("\n--- Calibration Verification Image ---")
+        generate_calib_verify_image(trace, vol_mapping)
+
     if DO_EXPORT and all_points:
         write_dxf_points(EXPORT_PATH, all_points)
 
     print(f"\nTotal: {len(all_points)} calibration points")
     print("DONE")
+
+
+def generate_calib_verify_image(trace, vol_mapping):
+    """Generate a projector image and add it to the Blender scene.
+
+    Creates a 1280x720 PNG showing all active projector pixel positions
+    as white pixels on black.  Also loads it as a camera background
+    image in Blender for visual alignment verification.
+    """
+    scene = bpy.context.scene
+    cam = scene.camera
+    cam_hfov = get_camera_hfov(scene, cam)
+    cam_vfov = get_camera_vfov(scene, cam)
+
+    px_left, px_right, py_top, py_bottom = get_projector_pixel_bounds(
+        cam_hfov, cam_vfov)
+
+    name = "CalibVerify"
+    img = bpy.data.images.get(name)
+    if img:
+        bpy.data.images.remove(img)
+    img = bpy.data.images.new(name, RES_X, RES_Y, alpha=False)
+
+    pixels = [0.0, 0.0, 0.0, 1.0] * (RES_X * RES_Y)
+
+    # Mark all mapped projector pixels as white
+    active_count = 0
+    for key_str in vol_mapping:
+        if isinstance(key_str, tuple):
+            ppx, ppy = key_str
+        else:
+            ppx, ppy = key_str
+        if 0 <= ppx < RES_X and 0 <= ppy < RES_Y:
+            # PNG pixel (0,0) is bottom-left; projector pixel (0,0) is top-left
+            flipped_y = (RES_Y - 1) - ppy
+            idx = (flipped_y * RES_X + ppx) * 4
+            pixels[idx]     = 1.0
+            pixels[idx + 1] = 1.0
+            pixels[idx + 2] = 1.0
+            active_count += 1
+
+    # Also mark alignment features (border, grid, corners) as white
+    # by tracing the projector pixel grid for the alignment border
+    inset = ALIGNMENT_INSET_PX
+    for ppx in range(inset, RES_X - inset, BORDER_PIXEL_STEP):
+        for ppy in [inset, RES_Y - 1 - inset]:
+            flipped_y = (RES_Y - 1) - ppy
+            idx = (flipped_y * RES_X + ppx) * 4
+            pixels[idx] = 0.0; pixels[idx+1] = 0.5; pixels[idx+2] = 1.0
+            active_count += 1
+    for ppy in range(inset, RES_Y - inset, BORDER_PIXEL_STEP):
+        for ppx in [inset, RES_X - 1 - inset]:
+            flipped_y = (RES_Y - 1) - ppy
+            idx = (flipped_y * RES_X + ppx) * 4
+            pixels[idx] = 0.0; pixels[idx+1] = 0.5; pixels[idx+2] = 1.0
+            active_count += 1
+
+    # Grid dots
+    if GRID_ENABLED:
+        for col in range(1, GRID_COLS):
+            for row in range(1, GRID_ROWS):
+                gx = int(RES_X * col / GRID_COLS)
+                gy = int(RES_Y * row / GRID_ROWS)
+                if 0 <= gx < RES_X and 0 <= gy < RES_Y:
+                    flipped_y = (RES_Y - 1) - gy
+                    idx = (flipped_y * RES_X + gx) * 4
+                    pixels[idx] = 1.0
+                    pixels[idx+1] = 1.0
+                    pixels[idx+2] = 0.0
+                    active_count += 1
+
+    img.pixels = pixels
+    try:
+        img.filepath_raw = CALIB_VERIFY_IMAGE_PATH
+        img.file_format = 'PNG'
+        img.save()
+        print(f"Calibration image saved: {CALIB_VERIFY_IMAGE_PATH}")
+    except Exception as e:
+        print(f"WARNING: Could not save calibration image: {e}")
+        print("  (Image still available in Blender as 'CalibVerify')")
+
+    # Add as camera background image for visual verification
+    cam.data.show_background_images = True
+    # Remove existing CalibVerify backgrounds
+    for bg in list(cam.data.background_images):
+        if bg.image and bg.image.name == name:
+            cam.data.background_images.remove(bg)
+    bg = cam.data.background_images.new()
+    bg.image = img
+    bg.alpha = 0.5
+    bg.display_depth = 'FRONT'
+
+    print(f"Calibration image added to camera background ({active_count} "
+          f"active pixels)")
+
 
 # --- Run from Blender scripting play button ---
 generate_calibration()

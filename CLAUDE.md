@@ -21,7 +21,11 @@ Based on the method described in Nayar & Anand's "3D Volumetric Display using Pa
 
 - **`volemetric_display_gen.py`** — Volumetric fill ray tracer. Fills the entire inner volume of the glass with fracture points (no target mesh needed — just the glass cube). Each pixel ray gets `POINTS_PER_RAY` fracture points randomly distributed along its path through the inner safe zone. Supports aspect ratio fitting, 90-degree rotation, and axis flipping for projector alignment. Simpler pipeline — only needs Camera + Cube.
 
-Both scripts share the same core pattern: camera pixel grid → ray tracing → refraction at glass surface → AABB filtering → DXF export. They share the same DXF writer, refraction function, point rendering setup, and Blender object creation utilities.
+- **`projector_fov_calibration.py`** — FOV calibration & alignment tool. Measures projector HFOV/VFOV via height-encoded tick rulers, generates alignment patterns (corners, crosshair, grid, border), depth probes for parallax verification, volumetric test regions across the H FOV, and cluster density tests. All non-cluster features use projector pixel coordinates for 1:1 pixel mapping. FOV ruler ticks extend past projector resolution bounds. Volumetric test regions span from bottom to top VFOV rulers, record 2D→3D mappings (exported as JSON), include inter-region alignment points and depth probes, and label each region's HFOV angle. Generates a calibration verification image and adds it to the Blender camera background.
+
+- **`projector_3d_image.py`** — Projector image generator for 3D display. Given a target 3D mesh ("ContentShape") in the Blender scene, traces refracted rays from every projector pixel through the glass, checks for content intersection, and outputs a PNG where lit pixels correspond to fracture points that would illuminate the target shape. Supports Lambertian shading from an external viewer camera ("ViewerCamera"). Creates verification point clouds and camera backgrounds in Blender for alignment checking.
+
+All scripts share the same core pattern: camera pixel grid → ray tracing → refraction at glass surface → AABB filtering → DXF/PNG export. They share the same DXF writer, refraction function, point rendering setup, and Blender object creation utilities.
 
 ## Required Blender Scene Objects
 
@@ -34,6 +38,16 @@ Both scripts share the same core pattern: camera pixel grid → ray tracing → 
 - **Camera** — Active scene camera (projector viewpoint)
 - **"Cube"** — Glass block (rays refract through this)
 - No target mesh needed — fills the entire inner volume
+
+### projector_fov_calibration.py
+- **Camera** — Active scene camera (projector viewpoint, wider FOV than projector)
+- **"Cube"** — Glass block (rays refract through this)
+
+### projector_3d_image.py
+- **Camera** — Active scene camera (projector viewpoint)
+- **"Cube"** — Glass block (rays refract through this)
+- **"ContentShape"** — 3D mesh to display inside the glass
+- **"ViewerCamera"** (optional) — External viewer camera for Lambertian shading
 
 ## Generated Blender Objects
 
@@ -50,6 +64,22 @@ Both scripts share the same core pattern: camera pixel grid → ray tracing → 
 |---|---|---|
 | `PixelPerfectCloud` | White | Volumetric fracture points (fills inner volume) |
 | `AlignmentHelpers` | Orange | Border edge helpers with depth interpolation |
+
+### projector_fov_calibration.py
+| Object | Color | Purpose |
+|---|---|---|
+| `FOV_Ruler` | Green | FOV measurement ticks with height encoding (extend past projector bounds) |
+| `AlignmentPattern` | Yellow | Corners, crosshair, grid, edge ticks (projector pixel coords) |
+| `AlignmentBorder` | Blue | Per-pixel border frame around projector FOV |
+| `DepthProbes` | Magenta | Off-plane verification points (projector pixel coords) |
+| `VolTestRegions` | Cyan | Volumetric display test patches with 2D→3D mapping |
+| `VolTestInterRegion` | Orange | Alignment dots and depth probes between vol test regions |
+| `ClusterTests` | White | Point clustering density tests |
+
+### projector_3d_image.py
+| Object | Color | Purpose |
+|---|---|---|
+| `ProjectorImage_Points` | Green | Lit fracture points for the target 3D shape |
 
 ## Configuration
 
