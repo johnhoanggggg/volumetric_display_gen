@@ -1250,31 +1250,20 @@ def generate_vol_test_regions(trace):
         mid_px = (cx_a + cx_b) // 2
         mid_py = (proj_y_top + proj_y_bottom) // 2
 
-        # Alignment dot (filled circle at mid-depth)
-        r = DEPTH_PROBE_RADIUS_PX
-        for dy in range(-r, r + 1):
-            for dx in range(-r, r + 1):
-                if dx * dx + dy * dy <= r * r:
-                    ppx = mid_px + dx
-                    ppy = mid_py + dy
-                    if 0 <= ppx < RES_X and 0 <= ppy < RES_Y:
-                        cam_x, cam_y = p2c(ppx, ppy)
-                        pt = trace(cam_x, cam_y, 0.5)
-                        if pt: inter_points.append(pt)
+        # Alignment point (single point at mid-depth)
+        if 0 <= mid_px < RES_X and 0 <= mid_py < RES_Y:
+            cam_x, cam_y = p2c(mid_px, mid_py)
+            pt = trace(cam_x, cam_y, 0.5)
+            if pt: inter_points.append(pt)
 
-        # Depth probes: front probe above midpoint, back probe below
+        # Depth probes: single front point above midpoint, single back point below
         probe_offset = 15
         for probe_py, depth in [(mid_py - probe_offset, DEPTH_FRONT),
                                 (mid_py + probe_offset, DEPTH_BACK)]:
-            for dy in range(-r, r + 1):
-                for dx in range(-r, r + 1):
-                    if dx * dx + dy * dy <= r * r:
-                        ppx = mid_px + dx
-                        ppy = probe_py + dy
-                        if 0 <= ppx < RES_X and 0 <= ppy < RES_Y:
-                            cam_x, cam_y = p2c(ppx, ppy)
-                            pt = trace(cam_x, cam_y, depth)
-                            if pt: inter_points.append(pt)
+            if 0 <= mid_px < RES_X and 0 <= probe_py < RES_Y:
+                cam_x, cam_y = p2c(mid_px, probe_py)
+                pt = trace(cam_x, cam_y, depth)
+                if pt: inter_points.append(pt)
 
     print(f"Vol test regions: {n_regions} patches, {len(points)} vol pts, "
           f"{len(inter_points)} inter-region pts, "
