@@ -189,7 +189,6 @@ ALIGNMENT_INSET_PX = 2
 GRID_ENABLED       = True
 GRID_COLS          = 8
 GRID_ROWS          = 5
-GRID_DOT_RADIUS_PX = 2
 
 # Margin (in pixels) around the FOV ruler where the alignment border
 # leaves gaps so the ruler ticks remain visible.
@@ -203,7 +202,6 @@ BORDER_PIXEL_STEP  = 5
 # DEPTH VERIFICATION PROBES CONFIG
 # -------------------------------------------------------------------
 GENERATE_DEPTH_PROBES = True
-DEPTH_PROBE_RADIUS_PX = 2
 DEPTH_FRONT           = 0.15   # Depth factor near front of safe zone (0=front)
 DEPTH_BACK            = 0.85   # Depth factor near back of safe zone (1=back)
 
@@ -865,7 +863,7 @@ def generate_alignment_pattern(trace):
     proj_cx = RES_X // 2
     proj_cy = RES_Y // 2
 
-    # === 1. CORNER FILLED CIRCLES (projector pixel space) ===
+    # === 1. CORNER POINTS (projector pixel space) ===
     corners = [
         (proj_x_min, proj_y_min),
         (proj_x_max, proj_y_min),
@@ -873,17 +871,11 @@ def generate_alignment_pattern(trace):
         (proj_x_max, proj_y_max),
     ]
     for corner_px, corner_py in corners:
-        r = CORNER_RADIUS_PX
-        for dy in range(-r, r + 1):
-            for dx in range(-r, r + 1):
-                if dx * dx + dy * dy <= r * r:
-                    ppx = corner_px + dx
-                    ppy = corner_py + dy
-                    if 0 <= ppx < RES_X and 0 <= ppy < RES_Y:
-                        cam_x, cam_y = p2c(ppx, ppy)
-                        pt = trace(cam_x, cam_y, d)
-                        if pt:
-                            points.append(pt)
+        if 0 <= corner_px < RES_X and 0 <= corner_py < RES_Y:
+            cam_x, cam_y = p2c(corner_px, corner_py)
+            pt = trace(cam_x, cam_y, d)
+            if pt:
+                points.append(pt)
 
     # === 2. CENTER CROSSHAIR (projector pixel space) ===
     for ppy in range(proj_cy - CROSSHAIR_LEN_PX,
@@ -967,17 +959,11 @@ def generate_alignment_pattern(trace):
             for row in range(1, GRID_ROWS):
                 proj_gx = int(RES_X * col / GRID_COLS)
                 proj_gy = int(RES_Y * row / GRID_ROWS)
-                r = GRID_DOT_RADIUS_PX
-                for dy in range(-r, r + 1):
-                    for dx in range(-r, r + 1):
-                        if dx * dx + dy * dy <= r * r:
-                            ppx = proj_gx + dx
-                            ppy = proj_gy + dy
-                            if 0 <= ppx < RES_X and 0 <= ppy < RES_Y:
-                                cam_x, cam_y = p2c(ppx, ppy)
-                                pt = trace(cam_x, cam_y, d)
-                                if pt:
-                                    points.append(pt)
+                if 0 <= proj_gx < RES_X and 0 <= proj_gy < RES_Y:
+                    cam_x, cam_y = p2c(proj_gx, proj_gy)
+                    pt = trace(cam_x, cam_y, d)
+                    if pt:
+                        points.append(pt)
 
     print(f"Alignment: {len(points)} feature pts + "
           f"{len(border_points)} border pts")
@@ -1006,7 +992,6 @@ def generate_depth_probes(trace):
 
     points = []
     probe_idx = 0
-    r = DEPTH_PROBE_RADIUS_PX
 
     if not GRID_ENABLED:
         print("Depth probes require GRID_ENABLED=True — skipping")
@@ -1022,15 +1007,10 @@ def generate_depth_probes(trace):
             mid_px = (grid_pxs[col_idx] + grid_pxs[col_idx + 1]) // 2
             depth = DEPTH_FRONT if (probe_idx % 2 == 0) else DEPTH_BACK
             probe_idx += 1
-            for dy in range(-r, r + 1):
-                for dx in range(-r, r + 1):
-                    if dx * dx + dy * dy <= r * r:
-                        ppx = mid_px + dx
-                        ppy = gpy + dy
-                        if 0 <= ppx < RES_X and 0 <= ppy < RES_Y:
-                            cam_x, cam_y = p2c(ppx, ppy)
-                            pt = trace(cam_x, cam_y, depth)
-                            if pt: points.append(pt)
+            if 0 <= mid_px < RES_X and 0 <= gpy < RES_Y:
+                cam_x, cam_y = p2c(mid_px, gpy)
+                pt = trace(cam_x, cam_y, depth)
+                if pt: points.append(pt)
 
     # --- Probes between vertically adjacent grid dots ---
     for gpx in grid_pxs:
@@ -1038,15 +1018,10 @@ def generate_depth_probes(trace):
             mid_py = (grid_pys[row_idx] + grid_pys[row_idx + 1]) // 2
             depth = DEPTH_BACK if (probe_idx % 2 == 0) else DEPTH_FRONT
             probe_idx += 1
-            for dy in range(-r, r + 1):
-                for dx in range(-r, r + 1):
-                    if dx * dx + dy * dy <= r * r:
-                        ppx = gpx + dx
-                        ppy = mid_py + dy
-                        if 0 <= ppx < RES_X and 0 <= ppy < RES_Y:
-                            cam_x, cam_y = p2c(ppx, ppy)
-                            pt = trace(cam_x, cam_y, depth)
-                            if pt: points.append(pt)
+            if 0 <= gpx < RES_X and 0 <= mid_py < RES_Y:
+                cam_x, cam_y = p2c(gpx, mid_py)
+                pt = trace(cam_x, cam_y, depth)
+                if pt: points.append(pt)
 
     # --- Corner depth probes (projector pixel space) ---
     corner_offset = CORNER_RADIUS_PX + 8
@@ -1059,15 +1034,10 @@ def generate_depth_probes(trace):
     ]
     for cpx, cpy, depth in corner_probes:
         probe_idx += 1
-        for dy in range(-r, r + 1):
-            for dx in range(-r, r + 1):
-                if dx * dx + dy * dy <= r * r:
-                    ppx = cpx + dx
-                    ppy = cpy + dy
-                    if 0 <= ppx < RES_X and 0 <= ppy < RES_Y:
-                        cam_x, cam_y = p2c(ppx, ppy)
-                        pt = trace(cam_x, cam_y, depth)
-                        if pt: points.append(pt)
+        if 0 <= cpx < RES_X and 0 <= cpy < RES_Y:
+            cam_x, cam_y = p2c(cpx, cpy)
+            pt = trace(cam_x, cam_y, depth)
+            if pt: points.append(pt)
 
     # --- Edge midpoint depth probes (projector pixel space) ---
     pcx = RES_X // 2
@@ -1081,15 +1051,10 @@ def generate_depth_probes(trace):
     ]
     for epx, epy, depth in edge_probes:
         probe_idx += 1
-        for dy in range(-r, r + 1):
-            for dx in range(-r, r + 1):
-                if dx * dx + dy * dy <= r * r:
-                    ppx = epx + dx
-                    ppy = epy + dy
-                    if 0 <= ppx < RES_X and 0 <= ppy < RES_Y:
-                        cam_x, cam_y = p2c(ppx, ppy)
-                        pt = trace(cam_x, cam_y, depth)
-                        if pt: points.append(pt)
+        if 0 <= epx < RES_X and 0 <= epy < RES_Y:
+            cam_x, cam_y = p2c(epx, epy)
+            pt = trace(cam_x, cam_y, depth)
+            if pt: points.append(pt)
 
     print(f"Depth probes: {len(points)} pts across {probe_idx} probes "
           f"(d={DEPTH_FRONT} front, d={DEPTH_BACK} back)")
@@ -1538,19 +1503,13 @@ def generate_calib_verify_image(trace, vol_mapping):
             for row in range(1, GRID_ROWS):
                 gx = int(RES_X * col / GRID_COLS)
                 gy = int(RES_Y * row / GRID_ROWS)
-                r = GRID_DOT_RADIUS_PX
-                for dy in range(-r, r + 1):
-                    for dx in range(-r, r + 1):
-                        if dx * dx + dy * dy <= r * r:
-                            ppx = gx + dx
-                            ppy = gy + dy
-                            if 0 <= ppx < RES_X and 0 <= ppy < RES_Y:
-                                flipped_y = (RES_Y - 1) - ppy
-                                idx = (flipped_y * RES_X + ppx) * 4
-                                pixels[idx] = 1.0
-                                pixels[idx+1] = 1.0
-                                pixels[idx+2] = 0.0
-                                active_count += 1
+                if 0 <= gx < RES_X and 0 <= gy < RES_Y:
+                    flipped_y = (RES_Y - 1) - gy
+                    idx = (flipped_y * RES_X + gx) * 4
+                    pixels[idx] = 1.0
+                    pixels[idx+1] = 1.0
+                    pixels[idx+2] = 0.0
+                    active_count += 1
 
     img.pixels = pixels
     try:
