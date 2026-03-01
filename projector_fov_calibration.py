@@ -84,18 +84,20 @@ from mathutils.bvhtree import BVHTree
 # -------------------------------------------------------------------
 # VOLUMETRIC TEST REGIONS
 #
-#   Larger volumetric display test patches positioned above the bottom
-#   VFOV ruler, spread across the projector's horizontal FOV. Uses
-#   the projector's actual pixel step (5px) and 1 point per ray at
-#   random depth. Sanity check for volumetric display alignment.
+#   Each region assumes a different projector HFOV (from VOL_TEST_HFOV_MIN
+#   to VOL_TEST_HFOV_MAX). Regions are spread across the projector's
+#   horizontal pixel grid and remap projector pixels to camera pixels
+#   through their assumed HFOV. When illuminated by the real projector,
+#   the region whose assumed HFOV matches the actual HFOV will display
+#   correctly; others will show misaligned points.
 #
 # -------------------------------------------------------------------
 # CLUSTER TESTS (Nayar & Anand, 2006)
 #
-#   Multiple micro-fractures per voxel increase light scattering.
-#   Points are randomly distributed in a sphere around each voxel
-#   center (not on a grid), with configurable depth and lateral spread.
-#   Compare brightness vs. diffusion tradeoffs empirically.
+#   Random seed points are scattered within each test patch, and each
+#   seed gets a cloud of companion points in a sphere around it.
+#   Different configs vary the number of companions and cloud radius
+#   to evaluate light scattering brightness vs. spatial diffusion.
 #
 # -------------------------------------------------------------------
 # WORKFLOW:
@@ -210,42 +212,44 @@ DEPTH_BACK            = 0.85   # Depth factor near back of safe zone (1=back)
 # -------------------------------------------------------------------
 # VOLUMETRIC TEST REGIONS CONFIG
 # -------------------------------------------------------------------
-# Volumetric display test patches across the projector's horizontal
-# FOV, positioned above the bottom VFOV ruler. Uses the projector's
-# actual pixel step and 1 point per ray at random depth for a
-# realistic volumetric display sanity check.
+# Each region assumes a different projector HFOV (evenly spaced from
+# VOL_TEST_HFOV_MIN to VOL_TEST_HFOV_MAX). Regions are spread across
+# the projector's horizontal pixel grid. The region whose HFOV matches
+# the real projector will display correctly when illuminated.
 GENERATE_VOL_TEST      = True
 VOL_TEST_SIZE_PX       = 15    # Half-size of each test region in pixels
 VOL_TEST_PPR           = 1     # Points per ray (1 = single random depth)
-VOL_TEST_PIXEL_STEP    = 5     # Trace every Nth pixel (projector renders 1 per 5)
-VOL_TEST_N_REGIONS     = 5     # Number of test regions across H FOV
+VOL_TEST_PIXEL_STEP    = 5     # Trace every Nth pixel
+VOL_TEST_N_REGIONS     = 5     # Number of test regions (one per HFOV value)
 VOL_TEST_GAP_PX        = 10    # Gap above the bottom VFOV ruler
+VOL_TEST_HFOV_MIN      = 37.0  # Minimum test HFOV (degrees)
+VOL_TEST_HFOV_MAX      = 39.0  # Maximum test HFOV (degrees)
 
 # -------------------------------------------------------------------
 # POINT CLUSTERING TEST CONFIG
 # -------------------------------------------------------------------
-# Tests different point clustering configurations per pixel to evaluate
-# light diffusion, per Nayar & Anand (Columbia CUCS-030-06, 2006).
-# Multiple micro-fractures per voxel increase scattering. Points are
-# randomly distributed in a sphere around each voxel center (not on a
-# grid), with configurable depth and lateral (pixel) spread.
-GENERATE_CLUSTER_TEST  = True
-CLUSTER_TEST_SIZE_PX   = 4     # Half-size of each cluster test patch
-CLUSTER_TEST_SPACING   = 18    # Pixels between test patch centers
+# Random seed points are scattered within each test patch. Each seed
+# gets a cloud of companion points in a sphere around it (rejection
+# sampling). Per Nayar & Anand (Columbia CUCS-030-06, 2006), multiple
+# micro-fractures per voxel increase scattering. Configs vary companion
+# count and cloud radius to compare brightness vs. diffusion.
+GENERATE_CLUSTER_TEST    = True
+CLUSTER_TEST_SIZE_PX     = 4     # Half-size of each cluster test patch
+CLUSTER_TEST_SPACING     = 18    # Pixels between test patch centers
+CLUSTER_TEST_N_SEEDS     = 20    # Random seed points per patch
 CLUSTER_CONFIGS = [
-    # (label, points_per_voxel, depth_spread, pixel_spread_px)
-    # depth_spread: fraction of ray segment for depth radius
-    # pixel_spread_px: lateral radius in pixels (fractional OK)
-    ("1pt",       1,  0.00, 0.0),  # Single point (baseline)
-    ("2pt_tight", 2,  0.02, 0.5),  # 2 points, very tight sphere
-    ("2pt_wide",  2,  0.10, 2.0),  # 2 points, wider sphere
-    ("3pt_tight", 3,  0.02, 0.5),  # 3 points, tight sphere
-    ("3pt_wide",  3,  0.10, 2.0),  # 3 points, wider sphere
-    ("5pt_tight", 5,  0.03, 1.0),  # 5 points, tight cluster
-    ("5pt_wide",  5,  0.10, 3.0),  # 5 points, wider cluster
-    ("8pt_tight", 8,  0.03, 1.5),  # 8 points, tight dense
-    ("8pt_wide",  8,  0.10, 3.0),  # 8 points, wider spread
-    ("12pt_sph",  12, 0.15, 4.0),  # 12 points, large sphere
+    # (label, companions_per_seed, depth_radius, lateral_radius_px)
+    # depth_radius: fraction of safe-zone ray segment
+    # lateral_radius_px: pixel radius for companion spread
+    ("bare",     0,  0.00, 0.0),  # Seeds only, no cloud (baseline)
+    ("1c_tight", 1,  0.02, 0.3),  # 1 companion, very tight
+    ("2c_tight", 2,  0.02, 0.5),  # 2 companions, tight cloud
+    ("2c_wide",  2,  0.08, 2.0),  # 2 companions, wider cloud
+    ("4c_tight", 4,  0.03, 0.8),  # 4 companions, tight
+    ("4c_wide",  4,  0.08, 2.5),  # 4 companions, wider
+    ("8c_tight", 8,  0.03, 1.0),  # 8 companions, tight cloud
+    ("8c_wide",  8,  0.10, 3.0),  # 8 companions, wider cloud
+    ("16c",      16, 0.08, 2.0),  # 16 companions, medium cloud
 ]
 
 # -------------------------------------------------------------------
@@ -526,6 +530,29 @@ def vfov_to_pixel_y(vfov_deg, camera_vfov_deg, window_py=None):
     cam_half = math.radians(camera_vfov_deg / 2.0)
     pixel_offset = (math.tan(edge_half) / math.tan(cam_half)) * (RES_Y / 2.0)
     return RES_Y / 2.0 + pixel_offset
+
+def remap_projector_to_camera(proj_px, proj_py, proj_hfov, cam_hfov, cam_vfov):
+    """Map a projector pixel to a camera pixel given the assumed projector HFOV.
+
+    The Blender camera has a wider FOV than the projector.  Given a
+    projector pixel and the projector's assumed HFOV, compute the
+    camera pixel that shares the same angular direction.  VFOV is
+    derived from HFOV via the native 16:9 aspect ratio.
+    """
+    proj_vfov = 2.0 * math.degrees(math.atan(
+        math.tan(math.radians(proj_hfov / 2.0)) * RES_Y / RES_X))
+
+    # Projector pixel -> tangent-space direction
+    u = (proj_px + 0.5) / RES_X
+    v = (proj_py + 0.5) / RES_Y
+    tan_h = math.tan(math.radians(proj_hfov / 2.0)) * (2.0 * u - 1.0)
+    tan_v = math.tan(math.radians(proj_vfov / 2.0)) * (2.0 * v - 1.0)
+
+    # Tangent-space direction -> camera pixel
+    cam_u = 0.5 + 0.5 * tan_h / math.tan(math.radians(cam_hfov / 2.0))
+    cam_v = 0.5 + 0.5 * tan_v / math.tan(math.radians(cam_vfov / 2.0))
+
+    return cam_u * RES_X - 0.5, cam_v * RES_Y - 0.5
 
 # -------------------------------------------------------------------
 # PROJECTOR FOV HELPERS
@@ -1071,64 +1098,84 @@ def generate_depth_probes(trace):
 # VOLUMETRIC TEST REGIONS
 # -------------------------------------------------------------------
 def generate_vol_test_regions(trace):
-    """Generate volumetric display test patches across the projector's H FOV.
+    """Generate volumetric test patches, each assuming a different projector HFOV.
 
-    Larger test regions positioned above the bottom VFOV ruler, spread
-    evenly across the projector's horizontal FOV. Uses the projector's
-    actual pixel step (VOL_TEST_PIXEL_STEP) and 1 point per ray at a
-    random depth for a realistic volumetric display sanity check.
-
-    Each region is (2*VOL_TEST_SIZE_PX+1) pixels square, traced at
-    every VOL_TEST_PIXEL_STEP pixels. With 1 PPR at random depth,
-    this matches how the actual volumetric display will work.
+    Regions are spread across the projector's horizontal pixel grid.
+    Each region remaps its projector pixels to camera pixels through its
+    assumed HFOV (from VOL_TEST_HFOV_MIN to VOL_TEST_HFOV_MAX).  When
+    illuminated by the real projector, the region whose assumed HFOV
+    matches the actual HFOV will display correctly; others will show
+    misaligned points.
     """
     scene = bpy.context.scene
     cam = scene.camera
     cam_hfov = get_camera_hfov(scene, cam)
     cam_vfov = get_camera_vfov(scene, cam)
 
-    px_left, px_right, py_top, py_bottom = get_projector_pixel_bounds(
-        cam_hfov, cam_vfov)
-    inset = ALIGNMENT_INSET_PX
-    x_min = max(0, int(round(px_left)) + inset)
-    x_max = min(RES_X - 1, int(round(px_right)) - inset)
+    n_regions = VOL_TEST_N_REGIONS
+    sz = VOL_TEST_SIZE_PX
+    step = VOL_TEST_PIXEL_STEP
+    points = []
 
-    # Position above the bottom VFOV ruler ticks
-    # The bottom V ruler ticks start at VFOV_MIN_DEG (closest to center)
+    # Assign an HFOV to each region, evenly spaced across the test range
+    if n_regions == 1:
+        hfovs = [(VOL_TEST_HFOV_MIN + VOL_TEST_HFOV_MAX) / 2.0]
+    else:
+        hfovs = [VOL_TEST_HFOV_MIN +
+                 i * (VOL_TEST_HFOV_MAX - VOL_TEST_HFOV_MIN) / (n_regions - 1)
+                 for i in range(n_regions)]
+
+    # Vertical center: position patches above the bottom VFOV ruler.
+    # Compute target y in camera pixel space, then inverse-remap to
+    # projector pixel space using the mid-range HFOV.
     wf = CALIB_WINDOW_FRACTION
     win_py = int(round(RES_Y * wf))
     bottom_ruler_y = int(vfov_to_pixel_y(VFOV_MIN_DEG, cam_vfov, win_py))
-    region_cy = bottom_ruler_y - VOL_TEST_GAP_PX - VOL_TEST_SIZE_PX
+    cam_target_cy = bottom_ruler_y - VOL_TEST_GAP_PX - sz
 
-    sz = VOL_TEST_SIZE_PX
-    step = VOL_TEST_PIXEL_STEP
-    n_regions = VOL_TEST_N_REGIONS
-    points = []
+    mid_hfov = (VOL_TEST_HFOV_MIN + VOL_TEST_HFOV_MAX) / 2.0
+    mid_vfov = projector_vfov_from_hfov(mid_hfov)
+    cam_v = (cam_target_cy + 0.5) / RES_Y
+    tan_v = (cam_v - 0.5) * 2.0 * math.tan(math.radians(cam_vfov / 2.0))
+    proj_v = 0.5 + 0.5 * tan_v / math.tan(math.radians(mid_vfov / 2.0))
+    proj_cy = int(proj_v * RES_Y - 0.5)
+
+    # Horizontal: spread across projector pixel grid
+    margin = sz + 10
 
     print(f"Vol test: {n_regions} regions, {2*sz+1}x{2*sz+1} px, "
-          f"step={step}, {VOL_TEST_PPR} PPR, y_center={region_cy}")
+          f"step={step}, {VOL_TEST_PPR} PPR")
+    print(f"  HFOV range: {VOL_TEST_HFOV_MIN:.1f} - "
+          f"{VOL_TEST_HFOV_MAX:.1f} deg")
 
     for i in range(n_regions):
-        # Evenly space across the projector H FOV
+        hfov_test = hfovs[i]
+
         x_frac = (i + 1.0) / (n_regions + 1.0)
-        region_cx = int(x_min + (x_max - x_min) * x_frac)
+        proj_cx = int(margin + (RES_X - 2 * margin) * x_frac)
 
         region_count = 0
         for dx in range(-sz, sz + 1, step):
-            for dy_px in range(-sz, sz + 1, step):
-                px = region_cx + dx
-                py = region_cy + dy_px
-                if 0 <= px < RES_X and 0 <= py < RES_Y:
-                    for _ in range(VOL_TEST_PPR):
-                        # Random depth across the full safe zone
-                        d = random.uniform(0.05, 0.95)
-                        pt = trace(px, py, d)
-                        if pt:
-                            points.append(pt)
-                            region_count += 1
+            for dy in range(-sz, sz + 1, step):
+                proj_px = proj_cx + dx
+                proj_py = proj_cy + dy
+                if not (0 <= proj_px < RES_X and 0 <= proj_py < RES_Y):
+                    continue
 
-        print(f"  Region {i+1}/{n_regions}: center=({region_cx}, {region_cy}), "
-              f"{region_count} pts")
+                cam_px, cam_py = remap_projector_to_camera(
+                    proj_px, proj_py, hfov_test, cam_hfov, cam_vfov)
+                if not (0 <= cam_px < RES_X and 0 <= cam_py < RES_Y):
+                    continue
+
+                for _ in range(VOL_TEST_PPR):
+                    d = random.uniform(0.05, 0.95)
+                    pt = trace(cam_px, cam_py, d)
+                    if pt:
+                        points.append(pt)
+                        region_count += 1
+
+        print(f"  Region {i+1}/{n_regions}: HFOV={hfov_test:.1f} deg, "
+              f"proj_center=({proj_cx}, {proj_cy}), {region_count} pts")
 
     print(f"Vol test regions: {n_regions} patches, {len(points)} total pts")
     return points
@@ -1137,15 +1184,15 @@ def generate_vol_test_regions(trace):
 # POINT CLUSTERING TESTS
 # -------------------------------------------------------------------
 def generate_cluster_tests(trace):
-    """Generate test patches with different point clustering densities.
+    """Generate test patches with clouds of points around random seeds.
 
     Per Nayar & Anand (Columbia CUCS-030-06, 2006), multiple micro-fractures
-    per voxel increase light scattering. Points are randomly distributed in
-    a sphere around each voxel center (not on a grid), using rejection
-    sampling. The sphere has independent depth and lateral (pixel) radii.
+    per voxel increase light scattering. Random seed points are scattered
+    within each patch, and each seed gets a cloud of companion points in a
+    sphere via rejection sampling.
 
     Patches are arranged in a row in the lower portion of the projector FOV.
-    Each patch has a separator tick above it and a point-count indicator below.
+    Each patch has a separator tick above it and a dot indicator below.
     """
     scene = bpy.context.scene
     cam = scene.camera
@@ -1164,6 +1211,7 @@ def generate_cluster_tests(trace):
     n_patches = len(CLUSTER_CONFIGS)
     sz = CLUSTER_TEST_SIZE_PX
     spacing = CLUSTER_TEST_SPACING
+    n_seeds = CLUSTER_TEST_N_SEEDS
 
     # Total width needed for all patches
     patch_width = 2 * sz + 1
@@ -1176,39 +1224,43 @@ def generate_cluster_tests(trace):
     # Place in lower quarter of projector area
     cy_cluster = y_min + int((y_max - y_min) * 0.75)
 
-    for cfg_idx, (label, n_pts, depth_spread, pixel_spread) in enumerate(
-            CLUSTER_CONFIGS):
-        # Patch center pixel in camera space
+    for cfg_idx, (label, n_companions, depth_radius, lateral_radius) in \
+            enumerate(CLUSTER_CONFIGS):
         patch_cx = start_x + cfg_idx * (patch_width + spacing) + sz
         patch_cy = cy_cluster
 
         patch_count = 0
-        for dx in range(-sz, sz + 1):
-            for dy_px in range(-sz, sz + 1):
-                px = patch_cx + dx
-                py = patch_cy + dy_px
-                if not (0 <= px < RES_X and 0 <= py < RES_Y):
-                    continue
+        for _ in range(n_seeds):
+            # Random seed position within patch
+            seed_px = patch_cx + random.uniform(-sz, sz)
+            seed_py = patch_cy + random.uniform(-sz, sz)
+            seed_depth = random.uniform(0.1, 0.9)
 
-                for j in range(n_pts):
-                    if n_pts == 1 or (depth_spread == 0 and pixel_spread == 0):
-                        # Single point, no spread
-                        pt = trace(px, py, 0.5)
-                    else:
-                        # Random point in unit sphere via rejection sampling
-                        while True:
-                            rx = random.uniform(-1, 1)
-                            ry = random.uniform(-1, 1)
-                            rz = random.uniform(-1, 1)
-                            if rx * rx + ry * ry + rz * rz <= 1.0:
-                                break
-                        # Scale to pixel and depth units
-                        target_px = px + rx * pixel_spread
-                        target_py = py + ry * pixel_spread
-                        d = 0.5 + rz * depth_spread / 2.0
-                        d = max(0.01, min(0.99, d))
-                        pt = trace(target_px, target_py, d)
+            if not (0 <= seed_px < RES_X and 0 <= seed_py < RES_Y):
+                continue
 
+            # Place the seed point itself
+            pt = trace(seed_px, seed_py, seed_depth)
+            if pt:
+                points.append(pt)
+                patch_count += 1
+
+            # Place companion points in a sphere around the seed
+            for _ in range(n_companions):
+                while True:
+                    rx = random.uniform(-1, 1)
+                    ry = random.uniform(-1, 1)
+                    rz = random.uniform(-1, 1)
+                    if rx * rx + ry * ry + rz * rz <= 1.0:
+                        break
+
+                comp_px = seed_px + rx * lateral_radius
+                comp_py = seed_py + ry * lateral_radius
+                comp_depth = seed_depth + rz * depth_radius
+                comp_depth = max(0.01, min(0.99, comp_depth))
+
+                if 0 <= comp_px < RES_X and 0 <= comp_py < RES_Y:
+                    pt = trace(comp_px, comp_py, comp_depth)
                     if pt:
                         points.append(pt)
                         patch_count += 1
@@ -1221,17 +1273,21 @@ def generate_cluster_tests(trace):
                 if pt:
                     points.append(pt)
 
-        # Point-count indicator below patch (n_pts horizontal dots)
-        for indicator in range(min(n_pts, 12)):
-            ix = patch_cx - min(n_pts, 12) // 2 + indicator * 2
+        # Indicator dots below patch (1 + companions per seed)
+        n_dots = min(n_companions + 1, 12)
+        for indicator in range(n_dots):
+            ix = patch_cx - n_dots // 2 + indicator * 2
             iy = patch_cy + sz + 4
             if 0 <= ix < RES_X and 0 <= iy < RES_Y:
                 pt = trace(ix, iy, 0.5)
                 if pt:
                     points.append(pt)
 
-        print(f"  Cluster '{label}': {n_pts}pts, depth={depth_spread:.2f}, "
-              f"lateral={pixel_spread:.1f}px -> {patch_count} fractures")
+        print(f"  Cluster '{label}': {n_seeds} seeds, "
+              f"{n_companions} companions, "
+              f"depth_r={depth_radius:.2f}, "
+              f"lateral_r={lateral_radius:.1f}px "
+              f"-> {patch_count} fractures")
 
     print(f"Cluster tests: {len(points)} total pts "
           f"across {n_patches} configs")
