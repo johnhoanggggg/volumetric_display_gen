@@ -725,8 +725,10 @@ def generate_fov_ruler(trace):
     x_center = RES_X // 2
 
     # === HORIZONTAL FOV RULER (vertical ticks at Y midline) ===
-    # Original height-encoded ticks centered at midline, PLUS thin
-    # extension lines that extend past the projector resolution bounds.
+    # Height-encoded ticks centered at midline. The ruler naturally
+    # extends past the projector resolution because HFOV_MAX_DEG >
+    # PROJECTOR_HFOV_DEG — ticks beyond the projector's cone angle
+    # exist but won't glow, which is how you read the FOV.
     fov = HFOV_MIN_DEG
     while fov <= HFOV_MAX_DEG + 0.001:
         fov_rounded = round(fov, 1)
@@ -736,46 +738,30 @@ def generate_fov_ruler(trace):
         px_right = hfov_to_pixel_x(fov_rounded, cam_hfov, win_px)
         px_left = RES_X - px_right
 
-        # Height-encoded tick centered at midline (original behavior)
         y_start = max(0, y_center - half_h)
         y_end = min(RES_Y - 1, y_center + half_h)
 
-        for ix in [int(round(px_right)), int(round(px_left))]:
-            if not (0 <= ix < RES_X):
-                continue
+        ix_r = int(round(px_right))
+        if 0 <= ix_r < RES_X:
             for y in range(y_start, y_end + 1):
                 t = (y - y_start) / max(1, y_end - y_start)
                 d = RULER_DEPTH_FRONT + (RULER_DEPTH_BACK - RULER_DEPTH_FRONT) * t
-                pt = trace(ix, y, d)
+                pt = trace(ix_r, y, d)
                 if pt:
                     points.append(pt)
 
-            # Extension lines past projector bounds (every 3rd pixel,
-            # from tick end to RULER_EXTEND_PX past the projector edge).
-            # These make the tick visible outside the projected area
-            # without disrupting the height encoding.
-            proj_bounds = get_projector_pixel_bounds(cam_hfov, cam_vfov)
-            pb_top_y = int(round(proj_bounds[2]))
-            pb_bot_y = int(round(proj_bounds[3]))
-            # Extend upward from tick top toward (and past) projector top
-            for y in range(max(0, pb_top_y - RULER_EXTEND_PX), y_start, 3):
-                t = y / max(1, RES_Y - 1)
+        ix_l = int(round(px_left))
+        if 0 <= ix_l < RES_X:
+            for y in range(y_start, y_end + 1):
+                t = (y - y_start) / max(1, y_end - y_start)
                 d = RULER_DEPTH_FRONT + (RULER_DEPTH_BACK - RULER_DEPTH_FRONT) * t
-                pt = trace(ix, y, d)
-                if pt:
-                    points.append(pt)
-            # Extend downward from tick bottom toward (and past) projector bottom
-            for y in range(y_end + 1, min(RES_Y, pb_bot_y + RULER_EXTEND_PX + 1), 3):
-                t = y / max(1, RES_Y - 1)
-                d = RULER_DEPTH_FRONT + (RULER_DEPTH_BACK - RULER_DEPTH_FRONT) * t
-                pt = trace(ix, y, d)
+                pt = trace(ix_l, y, d)
                 if pt:
                     points.append(pt)
 
         fov = round(fov + HFOV_STEP_DEG, 1)
 
     # === VERTICAL FOV RULER (horizontal ticks at X midline) ===
-    # Same approach: original height-encoded ticks + extension lines.
     fov = VFOV_MIN_DEG
     while fov <= VFOV_MAX_DEG + 0.001:
         fov_rounded = round(fov, 1)
@@ -785,35 +771,24 @@ def generate_fov_ruler(trace):
         py_bottom = vfov_to_pixel_y(fov_rounded, cam_vfov, win_py)
         py_top = RES_Y - py_bottom
 
-        # Height-encoded tick centered at midline
         x_start = max(0, x_center - half_w)
         x_end = min(RES_X - 1, x_center + half_w)
 
-        proj_bounds = get_projector_pixel_bounds(cam_hfov, cam_vfov)
-        pb_left_x = int(round(proj_bounds[0]))
-        pb_right_x = int(round(proj_bounds[1]))
-
-        for iy in [int(round(py_bottom)), int(round(py_top))]:
-            if not (0 <= iy < RES_Y):
-                continue
+        iy_b = int(round(py_bottom))
+        if 0 <= iy_b < RES_Y:
             for x in range(x_start, x_end + 1):
                 t = (x - x_start) / max(1, x_end - x_start)
                 d = RULER_DEPTH_FRONT + (RULER_DEPTH_BACK - RULER_DEPTH_FRONT) * t
-                pt = trace(x, iy, d)
+                pt = trace(x, iy_b, d)
                 if pt:
                     points.append(pt)
 
-            # Extension lines past projector X bounds
-            for x in range(max(0, pb_left_x - RULER_EXTEND_PX), x_start, 3):
-                t = x / max(1, RES_X - 1)
+        iy_t = int(round(py_top))
+        if 0 <= iy_t < RES_Y:
+            for x in range(x_start, x_end + 1):
+                t = (x - x_start) / max(1, x_end - x_start)
                 d = RULER_DEPTH_FRONT + (RULER_DEPTH_BACK - RULER_DEPTH_FRONT) * t
-                pt = trace(x, iy, d)
-                if pt:
-                    points.append(pt)
-            for x in range(x_end + 1, min(RES_X, pb_right_x + RULER_EXTEND_PX + 1), 3):
-                t = x / max(1, RES_X - 1)
-                d = RULER_DEPTH_FRONT + (RULER_DEPTH_BACK - RULER_DEPTH_FRONT) * t
-                pt = trace(x, iy, d)
+                pt = trace(x, iy_t, d)
                 if pt:
                     points.append(pt)
 
