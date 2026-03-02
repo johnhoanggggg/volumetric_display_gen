@@ -43,6 +43,9 @@ PROJECTOR_HFOV_DEG = 37.6
 CUBE_NAME     = "Cube"
 PCLOUD_NAME   = "PixelPerfectCloud"
 HELPER_NAME   = "AlignmentHelpers"
+BORDER_NAME   = "AlignmentBorder"
+CIRCLES_NAME  = "AlignmentCircles"
+DEPTH_NAME    = "DepthProbes"
 
 # --- Glass block dimensions (mm) ---
 # Set any to None to skip resizing and use existing cube geometry.
@@ -61,6 +64,18 @@ POINT_RADIUS   = 0.00005
 
 # --- Border ---
 HELPER_MARGIN  = 2         # Pixels from border for alignment helpers
+
+# --- Alignment pattern ---
+CORNER_RADIUS_PX   = 5     # Filled circle radius at corners
+CROSSHAIR_LEN_PX   = 40    # Center crosshair half-arm length
+CROSSHAIR_WIDTH    = 3     # Crosshair line width in pixels
+EDGE_TICK_LEN_PX   = 15    # Edge midpoint marker length
+ALIGNMENT_INSET_PX = 2     # Inset from projector edge pixels
+BORDER_PIXEL_STEP  = 5     # Trace every Nth pixel along border
+
+# --- Depth probes ---
+DEPTH_FRONT        = 0.15  # Front probe depth factor (0=front face)
+DEPTH_BACK         = 0.85  # Back probe depth factor (1=back face)
 
 # --- Projection transforms ---
 ROTATE_90     = False
@@ -473,51 +488,213 @@ def generate_laser_cloud():
                            color=(1.0, 1.0, 1.0, 1.0))
 
     # ------------------------------------------------------------------
-    # 2. GENERATE ALIGNMENT HELPERS (border edges with depth interpolation)
+    # 2. ALIGNMENT PATTERN — corners, crosshair, edge marks
     # ------------------------------------------------------------------
-    print("Generating alignment helpers...")
-    helper_coords = []
+    print("\nGenerating alignment pattern...")
+    align_pts = []
+    inset = ALIGNMENT_INSET_PX
+    d = 0.5  # Mid-depth for on-plane alignment features
 
-    # Bottom edge
-    for proj_x in range(0, RES_X, PIXEL_STEP):
-        cam_x, cam_y = p2c(proj_x, 0)
-        factor = 0.0 / max(1, RES_Y - 1)
-        pt = trace(cam_x, cam_y, factor)
-        if pt: helper_coords.append(pt)
+    proj_x_min = inset
+    proj_x_max = RES_X - 1 - inset
+    proj_y_min = inset
+    proj_y_max = RES_Y - 1 - inset
+    proj_cx = RES_X // 2
+    proj_cy = RES_Y // 2
+
+    # --- Corner filled circles ---
+    corners = [
+        (proj_x_min, proj_y_min),
+        (proj_x_max, proj_y_min),
+        (proj_x_min, proj_y_max),
+        (proj_x_max, proj_y_max),
+    ]
+    r = CORNER_RADIUS_PX
+    for cx, cy in corners:
+        for dx in range(-r, r + 1):
+            for dy in range(-r, r + 1):
+                if dx * dx + dy * dy <= r * r:
+                    ppx, ppy = cx + dx, cy + dy
+                    if 0 <= ppx < RES_X and 0 <= ppy < RES_Y:
+                        cam_x, cam_y = p2c(ppx, ppy)
+                        pt = trace(cam_x, cam_y, d)
+                        if pt: align_pts.append(pt)
+
+    # --- Center crosshair ---
+    half_cw = CROSSHAIR_WIDTH // 2
+    for ppy in range(proj_cy - CROSSHAIR_LEN_PX,
+                     proj_cy + CROSSHAIR_LEN_PX + 1):
+        for wx in range(-half_cw, half_cw + 1):
+            ppx = proj_cx + wx
+            if 0 <= ppx < RES_X and 0 <= ppy < RES_Y:
+                cam_x, cam_y = p2c(ppx, ppy)
+                pt = trace(cam_x, cam_y, d)
+                if pt: align_pts.append(pt)
+    for ppx in range(proj_cx - CROSSHAIR_LEN_PX,
+                     proj_cx + CROSSHAIR_LEN_PX + 1):
+        for wy in range(-half_cw, half_cw + 1):
+            ppy = proj_cy + wy
+            if 0 <= ppx < RES_X and 0 <= ppy < RES_Y:
+                cam_x, cam_y = p2c(ppx, ppy)
+                pt = trace(cam_x, cam_y, d)
+                if pt: align_pts.append(pt)
+
+    # --- Edge midpoint markers (verify no roll) ---
+    for ppy in range(proj_y_min, proj_y_min + EDGE_TICK_LEN_PX):
+        if 0 <= ppy < RES_Y:
+            cam_x, cam_y = p2c(proj_cx, ppy)
+            pt = trace(cam_x, cam_y, d)
+            if pt: align_pts.append(pt)
+    for ppy in range(proj_y_max - EDGE_TICK_LEN_PX + 1, proj_y_max + 1):
+        if 0 <= ppy < RES_Y:
+            cam_x, cam_y = p2c(proj_cx, ppy)
+            pt = trace(cam_x, cam_y, d)
+            if pt: align_pts.append(pt)
+    for ppx in range(proj_x_min, proj_x_min + EDGE_TICK_LEN_PX):
+        if 0 <= ppx < RES_X:
+            cam_x, cam_y = p2c(ppx, proj_cy)
+            pt = trace(cam_x, cam_y, d)
+            if pt: align_pts.append(pt)
+    for ppx in range(proj_x_max - EDGE_TICK_LEN_PX + 1, proj_x_max + 1):
+        if 0 <= ppx < RES_X:
+            cam_x, cam_y = p2c(ppx, proj_cy)
+            pt = trace(cam_x, cam_y, d)
+            if pt: align_pts.append(pt)
+
+    print(f"Alignment: {len(align_pts)} feature points")
+    create_obj_from_points(HELPER_NAME, align_pts,
+                           color=(1.0, 1.0, 0.0, 1.0))
+
+    # ------------------------------------------------------------------
+    # 3. BORDER FRAME — per-pixel outline at projector edges
+    # ------------------------------------------------------------------
+    print("Generating border frame...")
+    border_pts = []
 
     # Top edge
-    for proj_x in range(0, RES_X, PIXEL_STEP):
-        cam_x, cam_y = p2c(proj_x, RES_Y - 1)
-        factor = (RES_Y - 1) / max(1, RES_Y - 1)
-        pt = trace(cam_x, cam_y, factor)
-        if pt: helper_coords.append(pt)
+    for ppx in range(proj_x_min, proj_x_max + 1, BORDER_PIXEL_STEP):
+        cam_x, cam_y = p2c(ppx, proj_y_min)
+        pt = trace(cam_x, cam_y, d)
+        if pt: border_pts.append(pt)
+
+    # Bottom edge
+    for ppx in range(proj_x_min, proj_x_max + 1, BORDER_PIXEL_STEP):
+        cam_x, cam_y = p2c(ppx, proj_y_max)
+        pt = trace(cam_x, cam_y, d)
+        if pt: border_pts.append(pt)
 
     # Left edge
-    for proj_y in range(0, RES_Y, PIXEL_STEP):
-        cam_x, cam_y = p2c(0, proj_y)
-        factor = proj_y / max(1, RES_Y - 1)
-        pt = trace(cam_x, cam_y, factor)
-        if pt: helper_coords.append(pt)
+    for ppy in range(proj_y_min, proj_y_max + 1, BORDER_PIXEL_STEP):
+        cam_x, cam_y = p2c(proj_x_min, ppy)
+        pt = trace(cam_x, cam_y, d)
+        if pt: border_pts.append(pt)
 
     # Right edge
-    for proj_y in range(0, RES_Y, PIXEL_STEP):
-        cam_x, cam_y = p2c(RES_X - 1, proj_y)
-        factor = proj_y / max(1, RES_Y - 1)
-        pt = trace(cam_x, cam_y, factor)
-        if pt: helper_coords.append(pt)
+    for ppy in range(proj_y_min, proj_y_max + 1, BORDER_PIXEL_STEP):
+        cam_x, cam_y = p2c(proj_x_max, ppy)
+        pt = trace(cam_x, cam_y, d)
+        if pt: border_pts.append(pt)
 
-    print(f"Helpers: {len(helper_coords)} alignment points")
-    create_obj_from_points(HELPER_NAME, helper_coords,
-                           color=(1.0, 0.2, 0.0, 1.0))
+    print(f"Border: {len(border_pts)} points")
+    create_obj_from_points(BORDER_NAME, border_pts,
+                           color=(0.0, 0.5, 1.0, 1.0))
 
     # ------------------------------------------------------------------
-    # 3. EXPORT
+    # 4. CORNER CIRCLES — filled circles with depth sweep for 3D visibility
     # ------------------------------------------------------------------
+    print("Generating corner circles...")
+    circle_pts = []
+    cr = CORNER_RADIUS_PX + 3  # Slightly larger than the flat corner dots
+    for cx, cy in corners:
+        for dx in range(-cr, cr + 1):
+            for dy in range(-cr, cr + 1):
+                if dx * dx + dy * dy <= cr * cr:
+                    ppx, ppy = cx + dx, cy + dy
+                    if 0 <= ppx < RES_X and 0 <= ppy < RES_Y:
+                        # Depth sweeps front-to-back across the circle
+                        t = (dy + cr) / (2 * cr)
+                        depth = DEPTH_FRONT + (DEPTH_BACK - DEPTH_FRONT) * t
+                        cam_x, cam_y = p2c(ppx, ppy)
+                        pt = trace(cam_x, cam_y, depth)
+                        if pt: circle_pts.append(pt)
+
+    print(f"Circles: {len(circle_pts)} points")
+    create_obj_from_points(CIRCLES_NAME, circle_pts,
+                           color=(0.0, 1.0, 1.0, 1.0))
+
+    # ------------------------------------------------------------------
+    # 5. DEPTH PROBES — off-plane points for FOV verification
+    # ------------------------------------------------------------------
+    # If the projector FOV is wrong, on-plane features can still line up
+    # by adjusting distance. But off-plane probes introduce parallax:
+    # only the correct FOV illuminates both on-plane and off-plane points.
+    print("Generating depth probes...")
+    depth_pts = []
+    probe_idx = 0
+
+    # Quarter-point probes along each edge at alternating front/back
+    for frac in [0.25, 0.5, 0.75]:
+        ppx = int(proj_x_min + (proj_x_max - proj_x_min) * frac)
+        for ppy in [proj_y_min, proj_y_max]:
+            depth = DEPTH_FRONT if (probe_idx % 2 == 0) else DEPTH_BACK
+            probe_idx += 1
+            cam_x, cam_y = p2c(ppx, ppy)
+            pt = trace(cam_x, cam_y, depth)
+            if pt: depth_pts.append(pt)
+
+    for frac in [0.25, 0.5, 0.75]:
+        ppy = int(proj_y_min + (proj_y_max - proj_y_min) * frac)
+        for ppx in [proj_x_min, proj_x_max]:
+            depth = DEPTH_BACK if (probe_idx % 2 == 0) else DEPTH_FRONT
+            probe_idx += 1
+            cam_x, cam_y = p2c(ppx, ppy)
+            pt = trace(cam_x, cam_y, depth)
+            if pt: depth_pts.append(pt)
+
+    # Corner depth probes (offset inward from corners)
+    offset = CORNER_RADIUS_PX + 12
+    corner_probes = [
+        (proj_x_min + offset, proj_y_min + offset, DEPTH_FRONT),
+        (proj_x_max - offset, proj_y_min + offset, DEPTH_BACK),
+        (proj_x_min + offset, proj_y_max - offset, DEPTH_BACK),
+        (proj_x_max - offset, proj_y_max - offset, DEPTH_FRONT),
+    ]
+    for cpx, cpy, depth in corner_probes:
+        if 0 <= cpx < RES_X and 0 <= cpy < RES_Y:
+            cam_x, cam_y = p2c(cpx, cpy)
+            pt = trace(cam_x, cam_y, depth)
+            if pt: depth_pts.append(pt)
+
+    # Interior grid probes at alternating depths
+    for col in range(1, 5):
+        for row in range(1, 3):
+            gpx = int(RES_X * col / 5)
+            gpy = int(RES_Y * row / 3)
+            depth = DEPTH_FRONT if ((col + row) % 2 == 0) else DEPTH_BACK
+            if 0 <= gpx < RES_X and 0 <= gpy < RES_Y:
+                cam_x, cam_y = p2c(gpx, gpy)
+                pt = trace(cam_x, cam_y, depth)
+                if pt: depth_pts.append(pt)
+
+    print(f"Depth probes: {len(depth_pts)} points "
+          f"(front={DEPTH_FRONT}, back={DEPTH_BACK})")
+    create_obj_from_points(DEPTH_NAME, depth_pts,
+                           color=(1.0, 0.0, 0.8, 1.0))
+
+    # ------------------------------------------------------------------
+    # 6. EXPORT
+    # ------------------------------------------------------------------
+    all_points = (fracture_coords + align_pts + border_pts +
+                  circle_pts + depth_pts)
     if DO_EXPORT:
-        total_points = fracture_coords + helper_coords
-        write_dxf_points(EXPORT_PATH, total_points)
+        write_dxf_points(EXPORT_PATH, all_points)
 
-    print(f"\nTotal: {len(fracture_coords) + len(helper_coords)} points")
+    print(f"\nTotal: {len(all_points)} points")
+    print(f"  Cloud:     {len(fracture_coords)}")
+    print(f"  Alignment: {len(align_pts)}")
+    print(f"  Border:    {len(border_pts)}")
+    print(f"  Circles:   {len(circle_pts)}")
+    print(f"  Probes:    {len(depth_pts)}")
     print("DONE")
 
 
