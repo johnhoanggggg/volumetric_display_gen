@@ -172,6 +172,11 @@ CENTER_CROSS_LEN  = 25
 # 1 = every pixel (dense), 3 = every 3rd pixel (sparse).
 RULER_TICK_STEP   = 3
 
+# Ruler tick width — number of pixels of lateral thickness per tick.
+# 1 = single pixel (hard to see from non-projector angles),
+# 3 = 3 pixels wide (visible in Blender viewport from other angles).
+RULER_TICK_WIDTH  = 3
+
 # Ruler tick depth range — ticks sweep from front to back so that
 # projector positioning errors don't affect FOV calibration.
 # If all ticks are coplanar, a lateral shift or tilt in the projector
@@ -749,22 +754,27 @@ def generate_fov_ruler(trace):
         y_end = min(RES_Y - 1, y_center + half_h)
 
         ix_r = int(round(px_right))
-        if 0 <= ix_r < RES_X:
-            for y in range(y_start, y_end + 1, RULER_TICK_STEP):
-                t = (y - y_start) / max(1, y_end - y_start)
-                d = RULER_DEPTH_FRONT + (RULER_DEPTH_BACK - RULER_DEPTH_FRONT) * t
-                pt = trace(ix_r, y, d)
-                if pt:
-                    points.append(pt)
+        half_tw = RULER_TICK_WIDTH // 2
+        for wx in range(-half_tw, half_tw + 1):
+            ix = ix_r + wx
+            if 0 <= ix < RES_X:
+                for y in range(y_start, y_end + 1, RULER_TICK_STEP):
+                    t = (y - y_start) / max(1, y_end - y_start)
+                    d = RULER_DEPTH_FRONT + (RULER_DEPTH_BACK - RULER_DEPTH_FRONT) * t
+                    pt = trace(ix, y, d)
+                    if pt:
+                        points.append(pt)
 
         ix_l = int(round(px_left))
-        if 0 <= ix_l < RES_X:
-            for y in range(y_start, y_end + 1, RULER_TICK_STEP):
-                t = (y - y_start) / max(1, y_end - y_start)
-                d = RULER_DEPTH_FRONT + (RULER_DEPTH_BACK - RULER_DEPTH_FRONT) * t
-                pt = trace(ix_l, y, d)
-                if pt:
-                    points.append(pt)
+        for wx in range(-half_tw, half_tw + 1):
+            ix = ix_l + wx
+            if 0 <= ix < RES_X:
+                for y in range(y_start, y_end + 1, RULER_TICK_STEP):
+                    t = (y - y_start) / max(1, y_end - y_start)
+                    d = RULER_DEPTH_FRONT + (RULER_DEPTH_BACK - RULER_DEPTH_FRONT) * t
+                    pt = trace(ix, y, d)
+                    if pt:
+                        points.append(pt)
 
         fov = round(fov + HFOV_STEP_DEG, 1)
 
@@ -782,44 +792,58 @@ def generate_fov_ruler(trace):
         x_end = min(RES_X - 1, x_center + half_w)
 
         iy_b = int(round(py_bottom))
-        if 0 <= iy_b < RES_Y:
-            for x in range(x_start, x_end + 1, RULER_TICK_STEP):
-                t = (x - x_start) / max(1, x_end - x_start)
-                d = RULER_DEPTH_FRONT + (RULER_DEPTH_BACK - RULER_DEPTH_FRONT) * t
-                pt = trace(x, iy_b, d)
-                if pt:
-                    points.append(pt)
+        half_tw = RULER_TICK_WIDTH // 2
+        for wy in range(-half_tw, half_tw + 1):
+            iy = iy_b + wy
+            if 0 <= iy < RES_Y:
+                for x in range(x_start, x_end + 1, RULER_TICK_STEP):
+                    t = (x - x_start) / max(1, x_end - x_start)
+                    d = RULER_DEPTH_FRONT + (RULER_DEPTH_BACK - RULER_DEPTH_FRONT) * t
+                    pt = trace(x, iy, d)
+                    if pt:
+                        points.append(pt)
 
         iy_t = int(round(py_top))
-        if 0 <= iy_t < RES_Y:
-            for x in range(x_start, x_end + 1, RULER_TICK_STEP):
-                t = (x - x_start) / max(1, x_end - x_start)
-                d = RULER_DEPTH_FRONT + (RULER_DEPTH_BACK - RULER_DEPTH_FRONT) * t
-                pt = trace(x, iy_t, d)
-                if pt:
-                    points.append(pt)
+        for wy in range(-half_tw, half_tw + 1):
+            iy = iy_t + wy
+            if 0 <= iy < RES_Y:
+                for x in range(x_start, x_end + 1, RULER_TICK_STEP):
+                    t = (x - x_start) / max(1, x_end - x_start)
+                    d = RULER_DEPTH_FRONT + (RULER_DEPTH_BACK - RULER_DEPTH_FRONT) * t
+                    pt = trace(x, iy, d)
+                    if pt:
+                        points.append(pt)
 
         fov = round(fov + VFOV_STEP_DEG, 1)
 
-    # === CENTER REFERENCE CROSSHAIR (with depth sweep) ===
+    # === CENTER REFERENCE CROSSHAIR (with depth sweep + width) ===
+    half_tw = RULER_TICK_WIDTH // 2
     ch_y_start = y_center - CENTER_CROSS_LEN
     ch_y_end = y_center + CENTER_CROSS_LEN
-    for y in range(ch_y_start, ch_y_end + 1, RULER_TICK_STEP):
-        if 0 <= y < RES_Y:
-            t = (y - ch_y_start) / max(1, ch_y_end - ch_y_start)
-            d = RULER_DEPTH_FRONT + (RULER_DEPTH_BACK - RULER_DEPTH_FRONT) * t
-            pt = trace(x_center, y, d)
-            if pt:
-                points.append(pt)
+    for wx in range(-half_tw, half_tw + 1):
+        cx = x_center + wx
+        if not (0 <= cx < RES_X):
+            continue
+        for y in range(ch_y_start, ch_y_end + 1, RULER_TICK_STEP):
+            if 0 <= y < RES_Y:
+                t = (y - ch_y_start) / max(1, ch_y_end - ch_y_start)
+                d = RULER_DEPTH_FRONT + (RULER_DEPTH_BACK - RULER_DEPTH_FRONT) * t
+                pt = trace(cx, y, d)
+                if pt:
+                    points.append(pt)
     ch_x_start = x_center - CENTER_CROSS_LEN
     ch_x_end = x_center + CENTER_CROSS_LEN
-    for x in range(ch_x_start, ch_x_end + 1, RULER_TICK_STEP):
-        if 0 <= x < RES_X:
-            t = (x - ch_x_start) / max(1, ch_x_end - ch_x_start)
-            d = RULER_DEPTH_FRONT + (RULER_DEPTH_BACK - RULER_DEPTH_FRONT) * t
-            pt = trace(x, y_center, d)
-            if pt:
-                points.append(pt)
+    for wy in range(-half_tw, half_tw + 1):
+        cy = y_center + wy
+        if not (0 <= cy < RES_Y):
+            continue
+        for x in range(ch_x_start, ch_x_end + 1, RULER_TICK_STEP):
+            if 0 <= x < RES_X:
+                t = (x - ch_x_start) / max(1, ch_x_end - ch_x_start)
+                d = RULER_DEPTH_FRONT + (RULER_DEPTH_BACK - RULER_DEPTH_FRONT) * t
+                pt = trace(x, cy, d)
+                if pt:
+                    points.append(pt)
 
     print(f"FOV ruler: {len(points)} points")
     return points
