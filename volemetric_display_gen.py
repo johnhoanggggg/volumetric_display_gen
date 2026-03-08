@@ -394,9 +394,9 @@ def generate_laser_cloud():
 
     # Border edges in projector pixel space
     proj_x_min = 0
-    proj_x_max = n_proj_x - 1
+    proj_x_max = RES_X - 1
     proj_y_min = 0
-    proj_y_max = n_proj_y - 1
+    proj_y_max = RES_Y - 1
 
     border_edges = [
         ("TOP",    [(ppx, proj_y_min) for ppx in range(proj_x_min, proj_x_max + 1, BORDER_PIXEL_STEP)]),
