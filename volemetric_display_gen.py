@@ -321,27 +321,45 @@ def generate_laser_cloud():
                  return (ray_origin_local_2, ray_dir_local_2, max(0.0, t_enter), t_exit)
         return None
 
+    # --- PROJECTOR-TO-CAMERA PIXEL MAPPING ---
+    # All features (cloud + border) use projector pixel space mapped
+    # through the 37.6 deg FOV so everything is in the same coordinate space.
+    cam_hfov = get_camera_hfov(scene, cam)
+    cam_vfov = get_camera_vfov(scene, cam)
+    px_left, px_right, py_top, py_bottom = get_projector_pixel_bounds(cam_hfov, cam_vfov)
+
+    print(f"  Projector HFOV: {PROJECTOR_HFOV_DEG:.1f} deg")
+    print(f"  Projector edges in cam pixels: X=[{px_left:.1f}, {px_right:.1f}] "
+          f"Y=[{py_top:.1f}, {py_bottom:.1f}]")
+
+    def proj_to_cam(proj_px, proj_py):
+        """Convert projector pixel to camera pixel coordinate."""
+        cam_x = px_left + (px_right - px_left) * proj_px / (RES_X - 1)
+        cam_y = py_top + (py_bottom - py_top) * proj_py / (RES_Y - 1)
+        return cam_x, cam_y
+
     # ----------------------------------------------
     # 1. GENERATE MAIN CLOUD (Using Inner Scaled Box)
     # ----------------------------------------------
     print(f"Generating Cloud ({RES_X}x{RES_Y})...")
     fracture_coords = []
-    
+
     for x in range(0, RES_X, PIXEL_STEP):
         for y in range(0, RES_Y, PIXEL_STEP):
-            
+
             # --- MARGIN CHECK ---
             # If (x, y) is within HELPER_MARGIN of the border, skip it
-            if (x <= HELPER_MARGIN or x >= (RES_X - 1) - HELPER_MARGIN or 
+            if (x <= HELPER_MARGIN or x >= (RES_X - 1) - HELPER_MARGIN or
                 y <= HELPER_MARGIN or y >= (RES_Y - 1) - HELPER_MARGIN):
                 continue
-            
-            res = get_ray_interval(x, y, box_min_inner, box_max_inner)
+
+            cam_x, cam_y = proj_to_cam(x, y)
+            res = get_ray_interval(cam_x, cam_y, box_min_inner, box_max_inner)
             if res:
                 r_orig, r_dir, t_in, t_out = res
                 ray_len = t_out - t_in
                 step_size = ray_len / POINTS_PER_RAY
-                
+
                 for i in range(POINTS_PER_RAY):
                     base_t = t_in + (step_size * i)
                     t_val = base_t + (random.uniform(0.0, 1.0) * step_size)
@@ -349,7 +367,7 @@ def generate_laser_cloud():
                     fracture_coords.append(cube_mat @ p_local)
 
     create_obj_from_points(PCLOUD_NAME, fracture_coords, color=(1.0, 1.0, 1.0, 1.0))
-    
+
     # ----------------------------------------------
     # 2. GENERATE ALIGNMENT BORDER (Projector FOV edges with interweaved depth)
     # ----------------------------------------------
@@ -363,25 +381,6 @@ def generate_laser_cloud():
 
     print("Generating Alignment Border...")
     helper_coords = []
-
-    # Compute where projector FOV edges fall in camera pixel space
-    cam_hfov = get_camera_hfov(scene, cam)
-    cam_vfov = get_camera_vfov(scene, cam)
-    px_left, px_right, py_top, py_bottom = get_projector_pixel_bounds(cam_hfov, cam_vfov)
-
-    print(f"  Projector HFOV: {PROJECTOR_HFOV_DEG:.1f} deg")
-    print(f"  Projector edges in cam pixels: X=[{px_left:.1f}, {px_right:.1f}] "
-          f"Y=[{py_top:.1f}, {py_bottom:.1f}]")
-
-    # Number of projector pixels along each axis
-    n_proj_x = RES_X
-    n_proj_y = RES_Y
-
-    def proj_to_cam(proj_px, proj_py):
-        """Convert projector pixel to camera pixel coordinate."""
-        cam_x = px_left + (px_right - px_left) * proj_px / (n_proj_x - 1)
-        cam_y = py_top + (py_bottom - py_top) * proj_py / (n_proj_y - 1)
-        return cam_x, cam_y
 
     def trace_border_point(cam_x, cam_y, depth_factor):
         """Trace a single border point at the given camera pixel and depth."""
