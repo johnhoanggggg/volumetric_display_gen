@@ -297,31 +297,50 @@ def generate_laser_cloud():
     create_obj_from_points(PCLOUD_NAME, fracture_coords, color=(1.0, 1.0, 1.0, 1.0))
     
     # ----------------------------------------------
-    # 2. GENERATE ALIGNMENT HELPERS (Using Inner Box)
+    # 2. GENERATE ALIGNMENT BORDER (Clean straight lines with interweaved depth)
     # ----------------------------------------------
-    print("Generating Alignment Helpers...")
+    # Like the calibration file: 4 straight lines (top, bottom, left, right)
+    # traced on a base plane at mid-depth. Every DEPTH_INTERLEAVE_N points
+    # alternate between positive and negative depth offsets for parallax
+    # verification (replaces separate depth probes).
+    BORDER_BASE_DEPTH   = 0.5    # Mid-depth through the glass
+    DEPTH_INTERLEAVE_N  = 5      # Every N points, apply a depth offset
+    DEPTH_OFFSET_AMOUNT = 0.15   # Depth offset (fraction of ray segment)
+
+    print("Generating Alignment Border...")
     helper_coords = []
 
-    borders = [
-        ("BOTTOM", 0, RES_X, 1, 0, 1, 1),            
-        ("TOP",    0, RES_X, 1, RES_Y-1, RES_Y, 1),  
-        ("LEFT",   0, 1, 1,     0, RES_Y, 1),        
-        ("RIGHT",  RES_X-1, RES_X, 1, 0, RES_Y, 1)   
+    # Top edge: y = 0, sweep x
+    border_edges = [
+        ("TOP",    range(0, RES_X), lambda px: (px, 0)),
+        ("BOTTOM", range(0, RES_X), lambda px: (px, RES_Y - 1)),
+        ("LEFT",   range(0, RES_Y), lambda px: (0, px)),
+        ("RIGHT",  range(0, RES_Y), lambda px: (RES_X - 1, px)),
     ]
 
-    for label, xs, xe, xst, ys, ye, yst in borders:
-        for x in range(xs, xe, xst):
-            for y in range(ys, ye, yst):
-                # UPDATED: Use Inner Box for helpers too
-                res = get_ray_interval(x, y, box_min_inner, box_max_inner)
-                if res:
-                    r_orig, r_dir, t_in, t_out = res
-                    
-                    factor = y / max(1, RES_Y - 1)
-                    t_target = t_in + (t_out - t_in) * factor
-                    
-                    p_local = r_orig + r_dir * t_target
-                    helper_coords.append(cube_mat @ p_local)
+    for label, pixel_range, coord_fn in border_edges:
+        count = 0
+        for idx in pixel_range:
+            x, y = coord_fn(idx)
+            res = get_ray_interval(x, y, box_min_inner, box_max_inner)
+            if not res:
+                continue
+
+            r_orig, r_dir, t_in, t_out = res
+            ray_len = t_out - t_in
+
+            # Interweaved depth: alternate +/- offset every N points
+            depth = BORDER_BASE_DEPTH
+            group = (count // DEPTH_INTERLEAVE_N) % 2
+            if group == 0:
+                depth = BORDER_BASE_DEPTH + DEPTH_OFFSET_AMOUNT
+            else:
+                depth = BORDER_BASE_DEPTH - DEPTH_OFFSET_AMOUNT
+
+            t_target = t_in + ray_len * depth
+            p_local = r_orig + r_dir * t_target
+            helper_coords.append(cube_mat @ p_local)
+            count += 1
 
     create_obj_from_points(HELPER_NAME, helper_coords, color=(1.0, 0.2, 0.0, 1.0))
 
