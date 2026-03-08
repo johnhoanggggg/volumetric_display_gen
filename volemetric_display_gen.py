@@ -37,6 +37,9 @@ POINT_RADIUS  = 0.00005
 # Discard cloud points within this many pixels of the border/helpers
 HELPER_MARGIN = 1  
 
+# --- ALIGNMENT BORDER ---
+PROJECTOR_HFOV_DEG = 37.6   # Measured projector HFOV (border maps to this)
+
 # --- OPTICS ---
 IOR_OUTSIDE   = 1.00
 IOR_INSIDE    = 1.50
@@ -91,6 +94,57 @@ def refract(I, N, n1, n2):
     if k < 0.0: return None
     cost = math.sqrt(k)
     return (eta * I + (eta * cosi - cost) * N).normalized()
+
+# -------------------------------------------------------------------
+# FOV-TO-PIXEL MAPPING
+# -------------------------------------------------------------------
+def get_camera_hfov(scene, camera):
+    render = scene.render
+    sensor_fit = camera.data.sensor_fit
+    focal_length = camera.data.lens
+    aspect_x = render.resolution_x * render.pixel_aspect_x
+    aspect_y = render.resolution_y * render.pixel_aspect_y
+    if sensor_fit == 'HORIZONTAL' or (sensor_fit == 'AUTO' and aspect_x >= aspect_y):
+        sensor_width = camera.data.sensor_width
+    else:
+        sensor_width = camera.data.sensor_height * (aspect_x / aspect_y)
+    return math.degrees(2.0 * math.atan(sensor_width / (2.0 * focal_length)))
+
+def get_camera_vfov(scene, camera):
+    render = scene.render
+    sensor_fit = camera.data.sensor_fit
+    focal_length = camera.data.lens
+    aspect_x = render.resolution_x * render.pixel_aspect_x
+    aspect_y = render.resolution_y * render.pixel_aspect_y
+    if sensor_fit == 'VERTICAL' or (sensor_fit == 'AUTO' and aspect_y > aspect_x):
+        sensor_height = camera.data.sensor_height
+    else:
+        sensor_height = camera.data.sensor_width * (aspect_y / aspect_x)
+    return math.degrees(2.0 * math.atan(sensor_height / (2.0 * focal_length)))
+
+def get_projector_pixel_bounds(cam_hfov, cam_vfov):
+    """Map projector FOV edges into camera pixel coordinates (RES_X x RES_Y grid).
+
+    Returns (px_left, px_right, py_top, py_bottom) as floats in the
+    camera pixel grid.  When the camera FOV equals PROJECTOR_HFOV_DEG
+    these collapse to (0, RES_X, 0, RES_Y).
+    """
+    proj_vfov = 2.0 * math.degrees(math.atan(
+        math.tan(math.radians(PROJECTOR_HFOV_DEG / 2.0)) * RES_Y / RES_X))
+
+    # Horizontal
+    half_proj_h = math.tan(math.radians(PROJECTOR_HFOV_DEG / 2.0))
+    half_cam_h  = math.tan(math.radians(cam_hfov / 2.0))
+    px_right = (RES_X / 2.0) + (half_proj_h / half_cam_h) * (RES_X / 2.0)
+    px_left  = RES_X - px_right
+
+    # Vertical
+    half_proj_v = math.tan(math.radians(proj_vfov / 2.0))
+    half_cam_v  = math.tan(math.radians(cam_vfov / 2.0))
+    py_bottom = (RES_Y / 2.0) + (half_proj_v / half_cam_v) * (RES_Y / 2.0)
+    py_top    = RES_Y - py_bottom
+
+    return px_left, px_right, py_top, py_bottom
 
 # -------------------------------------------------------------------
 # BLENDER SETUP
@@ -297,49 +351,76 @@ def generate_laser_cloud():
     create_obj_from_points(PCLOUD_NAME, fracture_coords, color=(1.0, 1.0, 1.0, 1.0))
     
     # ----------------------------------------------
-    # 2. GENERATE ALIGNMENT BORDER (Clean straight lines with interweaved depth)
+    # 2. GENERATE ALIGNMENT BORDER (Projector FOV edges with interweaved depth)
     # ----------------------------------------------
-    # Like the calibration file: 4 straight lines (top, bottom, left, right)
-    # traced on a base plane at mid-depth. Every DEPTH_INTERLEAVE_N points
-    # alternate between positive and negative depth offsets for parallax
-    # verification (replaces separate depth probes).
+    # Border maps to the projector's actual edge pixels at PROJECTOR_HFOV_DEG,
+    # not the Blender camera edges. Every DEPTH_INTERLEAVE_N points alternate
+    # between +/- depth offset for parallax verification.
     BORDER_BASE_DEPTH   = 0.5    # Mid-depth through the glass
     DEPTH_INTERLEAVE_N  = 5      # Every N points, apply a depth offset
     DEPTH_OFFSET_AMOUNT = 0.15   # Depth offset (fraction of ray segment)
+    BORDER_PIXEL_STEP   = 1      # Trace every Nth projector pixel
 
     print("Generating Alignment Border...")
     helper_coords = []
 
-    # Top edge: y = 0, sweep x
+    # Compute where projector FOV edges fall in camera pixel space
+    cam_hfov = get_camera_hfov(scene, cam)
+    cam_vfov = get_camera_vfov(scene, cam)
+    px_left, px_right, py_top, py_bottom = get_projector_pixel_bounds(cam_hfov, cam_vfov)
+
+    print(f"  Projector HFOV: {PROJECTOR_HFOV_DEG:.1f} deg")
+    print(f"  Projector edges in cam pixels: X=[{px_left:.1f}, {px_right:.1f}] "
+          f"Y=[{py_top:.1f}, {py_bottom:.1f}]")
+
+    # Number of projector pixels along each axis
+    n_proj_x = RES_X
+    n_proj_y = RES_Y
+
+    def proj_to_cam(proj_px, proj_py):
+        """Convert projector pixel to camera pixel coordinate."""
+        cam_x = px_left + (px_right - px_left) * proj_px / (n_proj_x - 1)
+        cam_y = py_top + (py_bottom - py_top) * proj_py / (n_proj_y - 1)
+        return cam_x, cam_y
+
+    def trace_border_point(cam_x, cam_y, depth_factor):
+        """Trace a single border point at the given camera pixel and depth."""
+        res = get_ray_interval(cam_x, cam_y, box_min_full, box_max_full)
+        if not res:
+            return None
+        r_orig, r_dir, t_in, t_out = res
+        t_val = t_in + (t_out - t_in) * depth_factor
+        p_local = r_orig + r_dir * t_val
+        return cube_mat @ p_local
+
+    # Border edges in projector pixel space
+    proj_x_min = 0
+    proj_x_max = n_proj_x - 1
+    proj_y_min = 0
+    proj_y_max = n_proj_y - 1
+
     border_edges = [
-        ("TOP",    range(0, RES_X), lambda px: (px, 0)),
-        ("BOTTOM", range(0, RES_X), lambda px: (px, RES_Y - 1)),
-        ("LEFT",   range(0, RES_Y), lambda px: (0, px)),
-        ("RIGHT",  range(0, RES_Y), lambda px: (RES_X - 1, px)),
+        ("TOP",    [(ppx, proj_y_min) for ppx in range(proj_x_min, proj_x_max + 1, BORDER_PIXEL_STEP)]),
+        ("BOTTOM", [(ppx, proj_y_max) for ppx in range(proj_x_min, proj_x_max + 1, BORDER_PIXEL_STEP)]),
+        ("LEFT",   [(proj_x_min, ppy) for ppy in range(proj_y_min, proj_y_max + 1, BORDER_PIXEL_STEP)]),
+        ("RIGHT",  [(proj_x_max, ppy) for ppy in range(proj_y_min, proj_y_max + 1, BORDER_PIXEL_STEP)]),
     ]
 
-    for label, pixel_range, coord_fn in border_edges:
+    for label, pixel_list in border_edges:
         count = 0
-        for idx in pixel_range:
-            x, y = coord_fn(idx)
-            res = get_ray_interval(x, y, box_min_full, box_max_full)
-            if not res:
-                continue
-
-            r_orig, r_dir, t_in, t_out = res
-            ray_len = t_out - t_in
+        for proj_px, proj_py in pixel_list:
+            cam_x, cam_y = proj_to_cam(proj_px, proj_py)
 
             # Interweaved depth: alternate +/- offset every N points
-            depth = BORDER_BASE_DEPTH
             group = (count // DEPTH_INTERLEAVE_N) % 2
             if group == 0:
                 depth = BORDER_BASE_DEPTH + DEPTH_OFFSET_AMOUNT
             else:
                 depth = BORDER_BASE_DEPTH - DEPTH_OFFSET_AMOUNT
 
-            t_target = t_in + ray_len * depth
-            p_local = r_orig + r_dir * t_target
-            helper_coords.append(cube_mat @ p_local)
+            pt = trace_border_point(cam_x, cam_y, depth)
+            if pt:
+                helper_coords.append(pt)
             count += 1
 
     create_obj_from_points(HELPER_NAME, helper_coords, color=(1.0, 0.2, 0.0, 1.0))
