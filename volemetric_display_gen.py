@@ -198,7 +198,7 @@ def generate_laser_cloud():
     box_min_inner = Vector((-s_in, -s_in, -s_in))
     box_max_inner = Vector(( s_in,  s_in,  s_in))
 
-    # 2. Full Box (Unscaled / Scale 1.0) -- No longer used for helpers
+    # 2. Full Box (Unscaled / Scale 1.0) -- Used for alignment border
     s_full = 1.0
     box_min_full = Vector((-s_full, -s_full, -s_full))
     box_max_full = Vector(( s_full,  s_full,  s_full))
@@ -322,7 +322,7 @@ def generate_laser_cloud():
         count = 0
         for idx in pixel_range:
             x, y = coord_fn(idx)
-            res = get_ray_interval(x, y, box_min_inner, box_max_inner)
+            res = get_ray_interval(x, y, box_min_full, box_max_full)
             if not res:
                 continue
 
