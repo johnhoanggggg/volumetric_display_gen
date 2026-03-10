@@ -186,7 +186,7 @@ RULER_DEPTH_BACK  = 0.80   # Depth at bottom/right end of tick (1=back face)
 # The measured projector HFOV. The alignment border maps to the
 # projector's edge pixels at this FOV, NOT the Blender camera edges.
 # VFOV is derived from the 16:9 aspect ratio automatically.
-PROJECTOR_HFOV_DEG = 37.6
+PROJECTOR_HFOV_DEG = 38
 CORNER_RADIUS_PX   = 5
 CROSSHAIR_LEN_PX   = 40
 EDGE_TICK_LEN_PX   = 15

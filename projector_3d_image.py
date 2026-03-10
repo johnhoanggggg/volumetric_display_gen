@@ -63,7 +63,7 @@ CONTENT_NAME    = "ContentShape"   # Target 3D mesh to display
 VIEWER_CAM_NAME = "ViewerCamera"   # External viewer camera
 
 # --- Projector FOV (must match calibration) ---
-PROJECTOR_HFOV_DEG = 37.6
+PROJECTOR_HFOV_DEG = 38
 
 # --- Glass / optics (must match calibration) ---
 SAFE_ZONE_MARGIN = 0.90

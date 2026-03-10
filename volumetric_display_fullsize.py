@@ -37,7 +37,7 @@ RES_X         = 1280
 RES_Y         = 720
 
 # --- Calibrated projector FOV ---
-PROJECTOR_HFOV_DEG = 37.6
+PROJECTOR_HFOV_DEG = 38
 
 # --- Scene objects ---
 CUBE_NAME     = "Cube"

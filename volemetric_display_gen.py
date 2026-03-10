@@ -61,7 +61,7 @@ EDGE_POINT_DENSITY = 100.0    # Points per local-space unit along each edge
 HELPER_MARGIN = 1
 
 # --- ALIGNMENT BORDER ---
-PROJECTOR_HFOV_DEG = 37.6   # Measured projector HFOV (border maps to this)
+PROJECTOR_HFOV_DEG = 38   # Measured projector HFOV (border maps to this)
 CORNER_CIRCLE_RADIUS_PX = 3 # Corner circle radius in projector pixels
 CORNER_CIRCLE_DENSITY   = 1 # Sub-pixel steps per pixel for circle fill
 
