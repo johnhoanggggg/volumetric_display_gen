@@ -2,6 +2,7 @@ import bpy
 import math
 import random
 import os
+import json
 from mathutils import Vector, Matrix
 from mathutils.bvhtree import BVHTree
 
@@ -71,6 +72,104 @@ def write_dxf_points(filepath, points):
         print(f"SUCCESS: Exported {len(points)} points to {filepath}")
     except Exception as e:
         print(f"ERROR: Could not write DXF file: {e}")
+
+def write_config_txt(filepath, scene, cam, cube):
+    """Export full setup configuration so a renderer can reconstruct the scene."""
+    def mat4_rows(m):
+        return [[m[row][col] for col in range(4)] for row in range(4)]
+    def vec3(v):
+        return [v.x, v.y, v.z]
+
+    cam_origin, tl, tr, bl, br = get_camera_vectors(scene, cam)
+    cam_hfov = get_camera_hfov(scene, cam)
+    cam_vfov = get_camera_vfov(scene, cam)
+
+    # Glass local bounding box
+    local_bbox = [Vector(b) for b in cube.bound_box]
+    bbox_min = [min(v[i] for v in local_bbox) for i in range(3)]
+    bbox_max = [max(v[i] for v in local_bbox) for i in range(3)]
+
+    # Glass world-space dimensions
+    scale = cube.matrix_world.to_scale()
+    world_size = [(bbox_max[i] - bbox_min[i]) * abs(scale[i]) for i in range(3)]
+
+    config = {
+        "generator": "volemetric_display_gen.py",
+
+        # --- Projector / Camera ---
+        "projector": {
+            "resolution": [RES_X, RES_Y],
+            "pixel_step": PIXEL_STEP,
+            "projector_hfov_deg": PROJECTOR_HFOV_DEG,
+            "camera_hfov_deg": round(cam_hfov, 6),
+            "camera_vfov_deg": round(cam_vfov, 6),
+            "camera_focal_length_mm": cam.data.lens,
+            "camera_sensor_width_mm": cam.data.sensor_width,
+            "camera_sensor_height_mm": cam.data.sensor_height,
+            "camera_sensor_fit": cam.data.sensor_fit,
+            "camera_position": vec3(cam_origin),
+            "camera_matrix_world": mat4_rows(cam.matrix_world),
+            "frustum_corners_world": {
+                "top_left": vec3(tl),
+                "top_right": vec3(tr),
+                "bottom_left": vec3(bl),
+                "bottom_right": vec3(br),
+            },
+        },
+
+        # --- Glass Block ---
+        "glass": {
+            "object_name": CUBE_NAME,
+            "matrix_world": mat4_rows(cube.matrix_world),
+            "local_bbox_min": bbox_min,
+            "local_bbox_max": bbox_max,
+            "world_dimensions": world_size,
+            "inner_cube_scale": INNER_CUBE_SCALE,
+        },
+
+        # --- Optics ---
+        "optics": {
+            "ior_outside": IOR_OUTSIDE,
+            "ior_inside": IOR_INSIDE,
+        },
+
+        # --- Point Generation ---
+        "point_generation": {
+            "points_per_ray": POINTS_PER_RAY,
+            "point_radius": POINT_RADIUS,
+            "helper_margin_px": HELPER_MARGIN,
+            "surface_threshold": SURFACE_THRESHOLD,
+            "fit_mode": FIT_MODE,
+            "rotate_90": ROTATE_90,
+            "flip_x": FLIP_X,
+            "flip_y": FLIP_Y,
+        },
+
+        # --- Alignment Border ---
+        "alignment_border": {
+            "border_base_depth": 0.5,
+            "depth_interleave_n": 5,
+            "depth_offset_amount": 0.15,
+            "border_pixel_step": 1,
+        },
+
+        # --- Content (if present) ---
+        "content": {
+            "object_name": CONTENT_NAME if CONTENT_NAME else None,
+        },
+    }
+
+    # If content object exists, add its transform
+    content = bpy.data.objects.get(CONTENT_NAME) if CONTENT_NAME else None
+    if content:
+        config["content"]["matrix_world"] = mat4_rows(content.matrix_world)
+
+    try:
+        with open(filepath, 'w') as f:
+            json.dump(config, f, indent=2)
+        print(f"SUCCESS: Exported config to {filepath}")
+    except Exception as e:
+        print(f"ERROR: Could not write config file: {e}")
 
 # -------------------------------------------------------------------
 # GEOMETRY HELPERS
@@ -572,6 +671,9 @@ def generate_laser_cloud():
     if DO_EXPORT:
         total_points = helper_coords + fracture_coords
         write_dxf_points(EXPORT_PATH, total_points)
+
+        config_path = os.path.splitext(EXPORT_PATH)[0] + "_config.txt"
+        write_config_txt(config_path, scene, cam, cube)
 
 if __name__ == "__main__":
     generate_laser_cloud()
