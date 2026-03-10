@@ -603,7 +603,7 @@ def generate_laser_cloud():
 
     # Corner circles on the front offset plane for alignment starting point
     print("Generating Corner Circles...")
-    front_depth = BORDER_BASE_DEPTH + DEPTH_OFFSET_AMOUNT
+    front_depth = BORDER_BASE_DEPTH - DEPTH_OFFSET_AMOUNT
     corner_pixels = [
         (proj_x_min, proj_y_min),  # top-left
         (proj_x_max, proj_y_min),  # top-right
