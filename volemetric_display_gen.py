@@ -705,7 +705,7 @@ def generate_laser_cloud():
             print(f"  ERROR: Could not load image: {e}")
 
         if inp_img:
-            img_w, img_h = inp_img.width, inp_img.height
+            img_w, img_h = inp_img.size[0], inp_img.size[1]
             print(f"  Image size: {img_w}x{img_h}")
             inp_pixels = list(inp_img.pixels)  # flat RGBA
 
