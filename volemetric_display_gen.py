@@ -564,9 +564,10 @@ def generate_laser_cloud():
                 if seg_points:
                     mid_px, mid_py = seg_points[len(seg_points) // 2]
                     is_horiz = label in ("TOP", "BOTTOM")
-                    # Tick direction: inward (toward center of border)
+                    # Tick centered on border edge: half outward, half inward
                     sign = 1 if label in ("TOP", "LEFT") else -1
-                    for t in range(1, TICK_LENGTH_PX + 1):
+                    half = TICK_LENGTH_PX // 2
+                    for t in range(-half, half + 1):
                         if is_horiz:
                             tx, ty = mid_px, mid_py + sign * t
                         else:
@@ -584,7 +585,8 @@ def generate_laser_cloud():
             mid_px, mid_py = seg_points[len(seg_points) // 2]
             is_horiz = label in ("TOP", "BOTTOM")
             sign = 1 if label in ("TOP", "LEFT") else -1
-            for t in range(1, TICK_LENGTH_PX + 1):
+            half = TICK_LENGTH_PX // 2
+            for t in range(-half, half + 1):
                 if is_horiz:
                     tx, ty = mid_px, mid_py + sign * t
                 else:
