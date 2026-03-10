@@ -58,7 +58,6 @@ HELPER_MARGIN = 1
 
 # --- ALIGNMENT BORDER ---
 PROJECTOR_HFOV_DEG = 37.6   # Measured projector HFOV (border maps to this)
-FOV_PROBE_RANGE    = 0.1    # Back-plane alternate marks sweep HFOV +/- this many degrees
 
 # --- CONTENT SURFACE SELECTION ---
 # Max distance (world units) from a fracture point to the content surface
@@ -461,22 +460,6 @@ def generate_laser_cloud():
         cam_y = py_top + (py_bottom - py_top) * proj_py / (RES_Y - 1)
         return cam_x, cam_y
 
-    def proj_to_cam_with_hfov(proj_px, proj_py, hfov_deg):
-        """Convert projector pixel to camera pixel using a custom HFOV."""
-        vfov_deg = 2.0 * math.degrees(math.atan(
-            math.tan(math.radians(hfov_deg / 2.0)) * RES_Y / RES_X))
-        half_proj_h = math.tan(math.radians(hfov_deg / 2.0))
-        half_cam_h  = math.tan(math.radians(cam_hfov / 2.0))
-        lx = (RES_X / 2.0) - (half_proj_h / half_cam_h) * (RES_X / 2.0)
-        rx = (RES_X / 2.0) + (half_proj_h / half_cam_h) * (RES_X / 2.0)
-        half_proj_v = math.tan(math.radians(vfov_deg / 2.0))
-        half_cam_v  = math.tan(math.radians(cam_vfov / 2.0))
-        ty = (RES_Y / 2.0) - (half_proj_v / half_cam_v) * (RES_Y / 2.0)
-        by = (RES_Y / 2.0) + (half_proj_v / half_cam_v) * (RES_Y / 2.0)
-        cx = lx + (rx - lx) * proj_px / (RES_X - 1)
-        cy = ty + (by - ty) * proj_py / (RES_Y - 1)
-        return cx, cy
-
     # ----------------------------------------------
     # 1. GENERATE MAIN CLOUD (Using Inner Scaled Box)
     # ----------------------------------------------
@@ -556,35 +539,19 @@ def generate_laser_cloud():
 
     for label, pixel_list in border_edges:
         count = 0
-        back_count = 0           # tracks back-plane points for FOV probe
-        n_pixels = len(pixel_list)
         for proj_px, proj_py in pixel_list:
+            cam_x, cam_y = proj_to_cam(proj_px, proj_py)
+
             # Interweaved depth: alternate +/- offset every N points
             group = (count // DEPTH_INTERLEAVE_N) % 2
-            is_back = (group == 0)
-
-            if is_back:
+            if group == 0:
                 depth = BORDER_BASE_DEPTH + DEPTH_OFFSET_AMOUNT
             else:
                 depth = BORDER_BASE_DEPTH - DEPTH_OFFSET_AMOUNT
 
-            if is_back and back_count % 2 == 1 and FOV_PROBE_RANGE > 0:
-                # Every second back-plane point: offset FOV sweeping -range to +range
-                # Count how many back-plane points total on this edge for interpolation
-                n_back = n_pixels // 2  # approximate
-                frac = back_count / max(1, n_back - 1)
-                fov_offset = -FOV_PROBE_RANGE + 2.0 * FOV_PROBE_RANGE * frac
-                cam_x, cam_y = proj_to_cam_with_hfov(
-                    proj_px, proj_py, PROJECTOR_HFOV_DEG + fov_offset)
-            else:
-                cam_x, cam_y = proj_to_cam(proj_px, proj_py)
-
             pt = trace_border_point(cam_x, cam_y, depth)
             if pt:
                 helper_coords.append(pt)
-
-            if is_back:
-                back_count += 1
             count += 1
 
     create_obj_from_points(HELPER_NAME, helper_coords, color=(1.0, 0.2, 0.0, 1.0))
