@@ -59,6 +59,7 @@ HELPER_MARGIN = 1
 # --- ALIGNMENT BORDER ---
 PROJECTOR_HFOV_DEG = 37.6   # Measured projector HFOV (border maps to this)
 FOV_PROBE_RANGE    = 0.1    # Back-plane alternate marks sweep HFOV +/- this many degrees
+FOV_PROBE_STEP     = 0.05   # FOV offset increment per offset segment (degrees)
 
 # --- CONTENT SURFACE SELECTION ---
 # Max distance (world units) from a fracture point to the content surface
@@ -572,9 +573,10 @@ def generate_laser_cloud():
                 depth = BORDER_BASE_DEPTH - DEPTH_OFFSET_AMOUNT
 
             if is_back and back_seg % 2 == 1 and FOV_PROBE_RANGE > 0:
-                # Every second back-plane segment: offset FOV sweeping -range to +range
-                frac = back_seg / max(1, n_back_segs - 1)
-                fov_offset = -FOV_PROBE_RANGE + 2.0 * FOV_PROBE_RANGE * frac
+                # Every second back-plane segment: offset FOV stepping by FOV_PROBE_STEP
+                offset_seg = back_seg // 2   # 0-based index among offset segments
+                fov_offset = -FOV_PROBE_RANGE + offset_seg * FOV_PROBE_STEP
+                fov_offset = max(-FOV_PROBE_RANGE, min(FOV_PROBE_RANGE, fov_offset))
                 cam_x, cam_y = proj_to_cam_with_hfov(
                     proj_px, proj_py, PROJECTOR_HFOV_DEG + fov_offset)
             else:
