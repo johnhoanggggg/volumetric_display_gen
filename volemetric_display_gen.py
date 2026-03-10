@@ -658,7 +658,9 @@ def generate_laser_cloud():
 
     for a_idx, b_idx in edges:
         a, b = corners[a_idx], corners[b_idx]
-        length = (b - a).length
+        a_world = cube_mat @ a
+        b_world = cube_mat @ b
+        length = (b_world - a_world).length
         n_pts = max(1, round(length * EDGE_POINT_DENSITY))
         for i in range(n_pts):
             t = (i + 0.5) / n_pts
