@@ -54,7 +54,7 @@ RANDOM_SEED   = 42            # Fixed seed for reproducible point placement (Non
 POINT_RADIUS  = 0.00005
 
 # --- INNER CUBE EDGES ---
-EDGE_POINT_DENSITY = 1.0    # Points per local-space unit along each edge
+EDGE_POINT_DENSITY = 100.0    # Points per local-space unit along each edge
 
 # --- VISIBILITY ---
 # Discard cloud points within this many pixels of the border/helpers
@@ -62,8 +62,8 @@ HELPER_MARGIN = 1
 
 # --- ALIGNMENT BORDER ---
 PROJECTOR_HFOV_DEG = 37.6   # Measured projector HFOV (border maps to this)
-CORNER_CIRCLE_RADIUS_PX = 4 # Corner circle radius in projector pixels
-CORNER_CIRCLE_DENSITY   = 3 # Sub-pixel steps per pixel for circle fill
+CORNER_CIRCLE_RADIUS_PX = 3 # Corner circle radius in projector pixels
+CORNER_CIRCLE_DENSITY   = 1 # Sub-pixel steps per pixel for circle fill
 
 # --- CONTENT SURFACE SELECTION ---
 # Max distance (world units) from a fracture point to the content surface
@@ -514,7 +514,7 @@ def generate_laser_cloud():
     # between +/- depth offset for parallax verification.
     BORDER_BASE_DEPTH   = 0.5    # Mid-depth through the glass
     DEPTH_INTERLEAVE_N  = 20     # Every N points, apply a depth offset
-    DEPTH_OFFSET_AMOUNT = 0.25   # Depth offset (fraction of ray segment)
+    DEPTH_OFFSET_AMOUNT = 0.45   # Depth offset (fraction of ray segment)
     BORDER_PIXEL_STEP   = 1      # Trace every Nth projector pixel
 
     print("Generating Alignment Border...")
