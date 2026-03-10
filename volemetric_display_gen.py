@@ -431,7 +431,24 @@ def generate_laser_cloud():
     # ----------------------------------------------
     # 3. PROJECTOR IMAGE (content-targeted illumination)
     # ----------------------------------------------
+    # Auto-create ContentShape if it doesn't exist
     content = bpy.data.objects.get(CONTENT_NAME) if CONTENT_NAME else None
+    if CONTENT_NAME and not content:
+        print(f"  Creating default '{CONTENT_NAME}' (cube) inside glass block...")
+        bpy.ops.mesh.primitive_cube_add(size=1.0,
+                                         location=cube.matrix_world.translation)
+        content = bpy.context.active_object
+        content.name = CONTENT_NAME
+        content.data.name = CONTENT_NAME
+        # Scale to fit inside the inner safe zone (half the inner cube)
+        cube_scale = cube.matrix_world.to_scale()
+        content.scale = (cube_scale.x * INNER_CUBE_SCALE * 0.5,
+                         cube_scale.y * INNER_CUBE_SCALE * 0.5,
+                         cube_scale.z * INNER_CUBE_SCALE * 0.5)
+        bpy.context.view_layer.update()
+        # Refresh depsgraph after adding new object
+        depsgraph = bpy.context.evaluated_depsgraph_get()
+
     content_hit_points = []
 
     if content:
