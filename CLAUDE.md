@@ -71,7 +71,6 @@ All scripts share the same core pattern: camera pixel grid → ray tracing → r
 | `FOV_Ruler` | Green | FOV measurement ticks with height encoding (extend past projector bounds) |
 | `AlignmentPattern` | Yellow | Corners, crosshair, grid, edge ticks (projector pixel coords) |
 | `AlignmentBorder` | Blue | Per-pixel border frame around projector FOV |
-| `DepthProbes` | Magenta | Off-plane verification points (projector pixel coords) |
 | `VolTestRegions` | Cyan | Volumetric display test patches with 2D→3D mapping |
 | `VolTestInterRegion` | Orange | Alignment dots and depth probes between vol test regions |
 | `ClusterTests` | White | Nucleus/electron cluster brightness tests |

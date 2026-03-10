@@ -14,7 +14,7 @@ from mathutils.bvhtree import BVHTree
 #   Part 2 — ALIGNMENT PATTERN: Aligns projector pose to Blender camera.
 #
 # ADDITIONAL FEATURES:
-#   Depth Probes      — Off-plane points to verify FOV, not just position.
+#   Depth Interleave  — Border points zigzag in depth for parallax verification.
 #   Vol Test Regions   — Volumetric display test patches across the FOV.
 #   Cluster Tests      — Different point clustering densities per voxel
 #                        (per Nayar & Anand, Columbia CUCS-030-06, 2006).
@@ -65,21 +65,16 @@ from mathutils.bvhtree import BVHTree
 #     Edge midpoints — Verify no roll. All 4 should be symmetric.
 #     Border frame   — With gaps where the FOV ruler crosses.
 #     Sparse grid    — Interior dots. Catch distortion or local error.
-#     Depth probes   — Off-plane points between grid dots. Only the
-#                      correct FOV will illuminate all probes + grid
-#                      simultaneously (parallax disambiguation).
+#     Depth interleave — Every Nth border point is offset in depth,
+#                      creating parallax verification built into the border.
 #
 # -------------------------------------------------------------------
-# DEPTH PROBES — FOV VERIFICATION
+# DEPTH INTERLEAVE — FOV VERIFICATION (replaces separate depth probes)
 #
-#   If all calibration points are coplanar, any FOV will work if you
-#   position the projector at the right distance. But depth-varied
-#   points introduce parallax: a wrong-FOV projector can match the
-#   on-plane grid dots by adjusting distance, but the off-plane probes
-#   will shift laterally. Only the correct FOV illuminates everything.
-#
-#   Probes are placed at pixel locations between alignment grid dots,
-#   at alternating front/back depths (checkerboard pattern).
+#   Every DEPTH_INTERLEAVE_N-th border point alternates ±DEPTH_INTERLEAVE_OFFSET
+#   in depth, creating a subtle zigzag. If the projector FOV is wrong,
+#   these offset points shift laterally due to parallax, breaking the
+#   clean border line. No separate probe objects needed.
 #
 # -------------------------------------------------------------------
 # VOLUMETRIC TEST REGIONS
@@ -113,7 +108,7 @@ from mathutils.bvhtree import BVHTree
 #   6. Read the last glowing tick → that is your HFOV/VFOV
 #   7. Set PROJECTOR_HFOV_DEG to measured value (e.g. 37.6)
 #      (Blender camera can stay wider — alignment maps to projector FOV)
-#   8. Run with GENERATE_ALIGNMENT=True (and depth probes, clusters, etc.)
+#   8. Run with GENERATE_ALIGNMENT=True (and clusters, vol tests, etc.)
 #   9. Etch → align projector using test images
 #
 # ===================================================================
@@ -210,12 +205,12 @@ RULER_GAP_MARGIN   = 5
 # 1280//5 = 256 pts per horizontal edge, 720//5 = 144 per vertical edge.
 BORDER_PIXEL_STEP  = 5
 
-# -------------------------------------------------------------------
-# DEPTH VERIFICATION PROBES CONFIG
-# -------------------------------------------------------------------
-GENERATE_DEPTH_PROBES = True
-DEPTH_FRONT           = 0.15   # Depth factor near front of safe zone (0=front)
-DEPTH_BACK            = 0.85   # Depth factor near back of safe zone (1=back)
+# Interleaved depth offsets on the border — every DEPTH_INTERLEAVE_N-th
+# border point is pushed forward or backward in depth by ±DEPTH_INTERLEAVE_OFFSET.
+# This creates a subtle zigzag that provides parallax verification:
+# a wrong FOV will show misaligned depth-offset points.
+DEPTH_INTERLEAVE_N      = 5     # Every Nth border point gets depth offset
+DEPTH_INTERLEAVE_OFFSET = 0.15  # Depth offset (± from base 0.5)
 
 # -------------------------------------------------------------------
 # VOLUMETRIC TEST REGIONS CONFIG
@@ -296,7 +291,6 @@ POINT_RADIUS     = 0.00005
 FOV_RULER_NAME      = "FOV_Ruler"
 ALIGNMENT_NAME      = "AlignmentPattern"
 ALIGN_BORDER_NAME   = "AlignmentBorder"
-DEPTH_PROBES_NAME   = "DepthProbes"
 VOL_TEST_NAME       = "VolTestRegions"
 CLUSTER_TEST_NAME   = "ClusterTests"
 
@@ -881,7 +875,8 @@ def generate_alignment_pattern(trace):
     points = []
     border_points = []
     inset = ALIGNMENT_INSET_PX
-    d = 0.5  # Single depth for all on-plane features
+    d = 0.5  # Base depth for alignment features
+    border_counter = 0  # Counter for depth interleaving on border
 
     # All features use projector pixel coordinates via proj_to_cam().
     # This ensures every fracture point maps to an integer projector pixel.
@@ -954,12 +949,22 @@ def generate_alignment_pattern(trace):
     ruler_px_left = proj_cx - TICK_HEIGHT_WHOLE // 2 - gap
     ruler_px_right = proj_cx + TICK_HEIGHT_WHOLE // 2 + gap
 
+    # Helper: get depth for this border point with interleaving
+    def border_depth():
+        nonlocal border_counter
+        border_counter += 1
+        if border_counter % DEPTH_INTERLEAVE_N == 0:
+            # Alternate +/- offset
+            sign = 1 if (border_counter // DEPTH_INTERLEAVE_N) % 2 == 0 else -1
+            return d + sign * DEPTH_INTERLEAVE_OFFSET
+        return d
+
     # Top edge
     for ppx in range(proj_x_min, proj_x_max + 1, BORDER_PIXEL_STEP):
         if ruler_px_left <= ppx <= ruler_px_right:
             continue
         cam_x, cam_y = p2c(ppx, proj_y_min)
-        pt = trace(cam_x, cam_y, d)
+        pt = trace(cam_x, cam_y, border_depth())
         if pt: border_points.append(pt)
 
     # Bottom edge
@@ -967,7 +972,7 @@ def generate_alignment_pattern(trace):
         if ruler_px_left <= ppx <= ruler_px_right:
             continue
         cam_x, cam_y = p2c(ppx, proj_y_max)
-        pt = trace(cam_x, cam_y, d)
+        pt = trace(cam_x, cam_y, border_depth())
         if pt: border_points.append(pt)
 
     # Left edge
@@ -975,7 +980,7 @@ def generate_alignment_pattern(trace):
         if ruler_py_top <= ppy <= ruler_py_bot:
             continue
         cam_x, cam_y = p2c(proj_x_min, ppy)
-        pt = trace(cam_x, cam_y, d)
+        pt = trace(cam_x, cam_y, border_depth())
         if pt: border_points.append(pt)
 
     # Right edge
@@ -983,7 +988,7 @@ def generate_alignment_pattern(trace):
         if ruler_py_top <= ppy <= ruler_py_bot:
             continue
         cam_x, cam_y = p2c(proj_x_max, ppy)
-        pt = trace(cam_x, cam_y, d)
+        pt = trace(cam_x, cam_y, border_depth())
         if pt: border_points.append(pt)
 
     # === 5. SPARSE ALIGNMENT GRID (projector pixel space) ===
@@ -1001,97 +1006,6 @@ def generate_alignment_pattern(trace):
     print(f"Alignment: {len(points)} feature pts + "
           f"{len(border_points)} border pts")
     return points, border_points
-
-# -------------------------------------------------------------------
-# DEPTH VERIFICATION PROBES
-# -------------------------------------------------------------------
-def generate_depth_probes(trace):
-    """Generate off-plane verification points for FOV confirmation.
-
-    All probes use projector pixel coordinates so every fracture point
-    maps to a specific projector pixel.  Probes are placed between
-    alignment grid dots at alternating front/back depths.
-    """
-    scene = bpy.context.scene
-    cam = scene.camera
-    cam_hfov = get_camera_hfov(scene, cam)
-    cam_vfov = get_camera_vfov(scene, cam)
-
-    px_left, px_right, py_top, py_bottom = get_projector_pixel_bounds(
-        cam_hfov, cam_vfov)
-    p2c = lambda ppx, ppy: proj_to_cam(ppx, ppy, px_left, px_right,
-                                        py_top, py_bottom)
-    inset = ALIGNMENT_INSET_PX
-
-    points = []
-    probe_idx = 0
-
-    if not GRID_ENABLED:
-        print("Depth probes require GRID_ENABLED=True — skipping")
-        return points
-
-    # Grid positions in projector pixel space (same as alignment)
-    grid_pxs = [int(RES_X * col / GRID_COLS) for col in range(1, GRID_COLS)]
-    grid_pys = [int(RES_Y * row / GRID_ROWS) for row in range(1, GRID_ROWS)]
-
-    # --- Probes between horizontally adjacent grid dots ---
-    for gpy in grid_pys:
-        for col_idx in range(len(grid_pxs) - 1):
-            mid_px = (grid_pxs[col_idx] + grid_pxs[col_idx + 1]) // 2
-            depth = DEPTH_FRONT if (probe_idx % 2 == 0) else DEPTH_BACK
-            probe_idx += 1
-            if 0 <= mid_px < RES_X and 0 <= gpy < RES_Y:
-                cam_x, cam_y = p2c(mid_px, gpy)
-                pt = trace(cam_x, cam_y, depth)
-                if pt: points.append(pt)
-
-    # --- Probes between vertically adjacent grid dots ---
-    for gpx in grid_pxs:
-        for row_idx in range(len(grid_pys) - 1):
-            mid_py = (grid_pys[row_idx] + grid_pys[row_idx + 1]) // 2
-            depth = DEPTH_BACK if (probe_idx % 2 == 0) else DEPTH_FRONT
-            probe_idx += 1
-            if 0 <= gpx < RES_X and 0 <= mid_py < RES_Y:
-                cam_x, cam_y = p2c(gpx, mid_py)
-                pt = trace(cam_x, cam_y, depth)
-                if pt: points.append(pt)
-
-    # --- Corner depth probes (projector pixel space) ---
-    corner_offset = CORNER_RADIUS_PX + 8
-    corner_probes = [
-        (inset + corner_offset, inset + corner_offset, DEPTH_FRONT),
-        (RES_X - 1 - inset - corner_offset, inset + corner_offset, DEPTH_BACK),
-        (inset + corner_offset, RES_Y - 1 - inset - corner_offset, DEPTH_BACK),
-        (RES_X - 1 - inset - corner_offset,
-         RES_Y - 1 - inset - corner_offset, DEPTH_FRONT),
-    ]
-    for cpx, cpy, depth in corner_probes:
-        probe_idx += 1
-        if 0 <= cpx < RES_X and 0 <= cpy < RES_Y:
-            cam_x, cam_y = p2c(cpx, cpy)
-            pt = trace(cam_x, cam_y, depth)
-            if pt: points.append(pt)
-
-    # --- Edge midpoint depth probes (projector pixel space) ---
-    pcx = RES_X // 2
-    pcy = RES_Y // 2
-    edge_offset = EDGE_TICK_LEN_PX + 5
-    edge_probes = [
-        (pcx, inset + edge_offset, DEPTH_FRONT),
-        (pcx, RES_Y - 1 - inset - edge_offset, DEPTH_BACK),
-        (inset + edge_offset, pcy, DEPTH_FRONT),
-        (RES_X - 1 - inset - edge_offset, pcy, DEPTH_BACK),
-    ]
-    for epx, epy, depth in edge_probes:
-        probe_idx += 1
-        if 0 <= epx < RES_X and 0 <= epy < RES_Y:
-            cam_x, cam_y = p2c(epx, epy)
-            pt = trace(cam_x, cam_y, depth)
-            if pt: points.append(pt)
-
-    print(f"Depth probes: {len(points)} pts across {probe_idx} probes "
-          f"(d={DEPTH_FRONT} front, d={DEPTH_BACK} back)")
-    return points
 
 # -------------------------------------------------------------------
 # VOLUMETRIC TEST REGIONS
@@ -1238,8 +1152,10 @@ def generate_vol_test_regions(trace):
             if pt: inter_points.append(pt)
 
         probe_offset = 15
-        for probe_py, depth in [(mid_py - probe_offset, DEPTH_FRONT),
-                                (mid_py + probe_offset, DEPTH_BACK)]:
+        for probe_py, depth in [(mid_py - probe_offset,
+                                  0.5 - DEPTH_INTERLEAVE_OFFSET),
+                                 (mid_py + probe_offset,
+                                  0.5 + DEPTH_INTERLEAVE_OFFSET)]:
             if 0 <= mid_px < RES_X and 0 <= probe_py < RES_Y:
                 cam_x, cam_y = p2c_layout(mid_px, probe_py)
                 pt = trace(cam_x, cam_y, depth)
@@ -1440,12 +1356,6 @@ def generate_calibration():
         all_points.extend(align_pts)
         all_points.extend(border_pts)
 
-    if GENERATE_DEPTH_PROBES:
-        print("\n--- Depth Verification Probes ---")
-        probe_pts = generate_depth_probes(trace)
-        create_obj_from_points(DEPTH_PROBES_NAME, probe_pts,
-                               color=(1.0, 0.0, 0.8, 1.0))  # Magenta
-        all_points.extend(probe_pts)
 
     vol_mapping = {}
     if GENERATE_VOL_TEST:
