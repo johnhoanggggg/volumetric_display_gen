@@ -62,6 +62,8 @@ HELPER_MARGIN = 1
 
 # --- ALIGNMENT BORDER ---
 PROJECTOR_HFOV_DEG = 37.6   # Measured projector HFOV (border maps to this)
+CORNER_CIRCLE_RADIUS_PX = 4 # Corner circle radius in projector pixels
+CORNER_CIRCLE_DENSITY   = 3 # Sub-pixel steps per pixel for circle fill
 
 # --- CONTENT SURFACE SELECTION ---
 # Max distance (world units) from a fracture point to the content surface
@@ -598,6 +600,34 @@ def generate_laser_cloud():
             if back_seg_count % TICK_EVERY_N == 0:
                 mid_px, mid_py = seg_points[len(seg_points) // 2]
                 trace_tick(mid_px, mid_py, label)
+
+    # Corner circles on the front offset plane for alignment starting point
+    print("Generating Corner Circles...")
+    front_depth = BORDER_BASE_DEPTH + DEPTH_OFFSET_AMOUNT
+    corner_pixels = [
+        (proj_x_min, proj_y_min),  # top-left
+        (proj_x_max, proj_y_min),  # top-right
+        (proj_x_min, proj_y_max),  # bottom-left
+        (proj_x_max, proj_y_max),  # bottom-right
+    ]
+    r = CORNER_CIRCLE_RADIUS_PX
+    step = 1.0 / CORNER_CIRCLE_DENSITY
+    corner_count = 0
+    for cx, cy in corner_pixels:
+        sx = cx - r
+        while sx <= cx + r:
+            sy = cy - r
+            while sy <= cy + r:
+                dx, dy = sx - cx, sy - cy
+                if dx * dx + dy * dy <= r * r:
+                    tcx, tcy = proj_to_cam(sx, sy)
+                    pt = trace_border_point(tcx, tcy, front_depth)
+                    if pt:
+                        helper_coords.append(pt)
+                        corner_count += 1
+                sy += step
+            sx += step
+    print(f"  {corner_count} corner circle points (4 corners, r={r}px)")
 
     create_obj_from_points(HELPER_NAME, helper_coords, color=(1.0, 0.2, 0.0, 1.0))
 
