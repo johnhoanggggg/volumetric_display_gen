@@ -44,6 +44,11 @@ HELPER_MARGIN = 1
 # --- ALIGNMENT BORDER ---
 PROJECTOR_HFOV_DEG = 37.6   # Measured projector HFOV (border maps to this)
 
+# --- CONTENT SURFACE SELECTION ---
+# Max distance (world units) from a fracture point to the content surface
+# for that pixel to be illuminated. Tune based on your glass/mesh scale.
+SURFACE_THRESHOLD = 0.005
+
 # --- OPTICS ---
 IOR_OUTSIDE   = 1.00
 IOR_INSIDE    = 1.50
@@ -345,8 +350,11 @@ def generate_laser_cloud():
     # ----------------------------------------------
     # 1. GENERATE MAIN CLOUD (Using Inner Scaled Box)
     # ----------------------------------------------
+    # Also record which pixel produced each fracture point so we can
+    # later decide which pixels to illuminate based on content proximity.
     print(f"Generating Cloud ({RES_X}x{RES_Y})...")
     fracture_coords = []
+    pixel_to_points = {}   # (x, y) -> list of world-space Vector points
 
     for x in range(0, RES_X, PIXEL_STEP):
         for y in range(0, RES_Y, PIXEL_STEP):
@@ -363,12 +371,17 @@ def generate_laser_cloud():
                 r_orig, r_dir, t_in, t_out = res
                 ray_len = t_out - t_in
                 step_size = ray_len / POINTS_PER_RAY
+                pts = []
 
                 for i in range(POINTS_PER_RAY):
                     base_t = t_in + (step_size * i)
                     t_val = base_t + (random.uniform(0.0, 1.0) * step_size)
                     p_local = r_orig + r_dir * t_val
-                    fracture_coords.append(cube_mat @ p_local)
+                    p_world = cube_mat @ p_local
+                    fracture_coords.append(p_world)
+                    pts.append(p_world)
+
+                pixel_to_points[(x, y)] = pts
 
     create_obj_from_points(PCLOUD_NAME, fracture_coords, color=(1.0, 1.0, 1.0, 1.0))
 
@@ -431,6 +444,11 @@ def generate_laser_cloud():
     # ----------------------------------------------
     # 3. PROJECTOR IMAGE (content-targeted illumination)
     # ----------------------------------------------
+    # For each pixel's fracture point(s), find the nearest point on the
+    # ContentShape surface.  If the closest fracture point is within
+    # SURFACE_THRESHOLD, light that pixel.  This selects the subset of
+    # the volumetric cloud that sits on/near the target surface.
+
     # Auto-create ContentShape if it doesn't exist
     content = bpy.data.objects.get(CONTENT_NAME) if CONTENT_NAME else None
     if CONTENT_NAME and not content:
@@ -440,19 +458,18 @@ def generate_laser_cloud():
         content = bpy.context.active_object
         content.name = CONTENT_NAME
         content.data.name = CONTENT_NAME
-        # Scale to fit inside the inner safe zone (half the inner cube)
         cube_scale = cube.matrix_world.to_scale()
         content.scale = (cube_scale.x * INNER_CUBE_SCALE * 0.5,
                          cube_scale.y * INNER_CUBE_SCALE * 0.5,
                          cube_scale.z * INNER_CUBE_SCALE * 0.5)
         bpy.context.view_layer.update()
-        # Refresh depsgraph after adding new object
         depsgraph = bpy.context.evaluated_depsgraph_get()
 
     content_hit_points = []
 
     if content:
         print(f"\nGenerating projector image for '{CONTENT_NAME}'...")
+        print(f"  Surface threshold: {SURFACE_THRESHOLD}")
 
         # Build BVH for content mesh
         for poly in content.data.polygons:
@@ -466,71 +483,49 @@ def generate_laser_cloud():
         # Allocate RGBA pixel buffer (black with full alpha)
         pixels = [0.0, 0.0, 0.0, 1.0] * (RES_X * RES_Y)
         hit_count = 0
-        total_traced = 0
 
-        for x in range(0, RES_X, PIXEL_STEP):
-            for y in range(0, RES_Y, PIXEL_STEP):
-                cam_x, cam_y = proj_to_cam(x, y)
-                res = get_ray_interval(cam_x, cam_y, box_min_inner, box_max_inner)
-                if not res:
+        for (x, y), pts in pixel_to_points.items():
+            # For each fracture point belonging to this pixel,
+            # find the nearest surface point on the content mesh.
+            best_dist = float('inf')
+            best_normal_world = None
+            best_point = None
+
+            for p_world in pts:
+                # Transform fracture point into content's local space
+                p_local = content_mat_inv @ p_world
+                nearest = content_bvh.find_nearest(p_local)
+                if nearest[0] is None:
                     continue
-                total_traced += 1
+                # nearest = (location, normal, index, distance)
+                dist = nearest[3]
+                if dist < best_dist:
+                    best_dist = dist
+                    best_point = p_world
+                    best_normal_world = (content_normal_mat @ nearest[1]).normalized()
 
-                r_orig, r_dir, t_in, t_out = res
+            if best_dist > SURFACE_THRESHOLD:
+                continue
 
-                # Convert ray segment endpoints to world space
-                p_enter_world = cube_mat @ (r_orig + r_dir * t_in)
-                p_exit_world = cube_mat @ (r_orig + r_dir * t_out)
+            hit_count += 1
 
-                # Transform ray into content's local space
-                origin_local = content_mat_inv @ p_enter_world
-                exit_local = content_mat_inv @ p_exit_world
-                local_vec = exit_local - origin_local
-                ray_len_local = local_vec.length
-                if ray_len_local < 1e-9:
-                    continue
-                dir_local = local_vec.normalized()
+            # Shade by surface normal facing the projector
+            shade = 1.0
+            if best_normal_world:
+                shade = max(0.15, best_normal_world.dot(
+                    (cam_origin - best_point).normalized()))
 
-                # Cast ray against content mesh within the safe zone segment
-                hit = content_bvh.ray_cast(origin_local, dir_local, ray_len_local)
+            # Set pixel (flip Y for PNG bottom-left origin)
+            flipped_y = (RES_Y - 1) - y
+            idx = (flipped_y * RES_X + x) * 4
+            pixels[idx]     = shade
+            pixels[idx + 1] = shade
+            pixels[idx + 2] = shade
 
-                if hit[0]:
-                    # Direct hit within safe zone
-                    hit_local, normal_local = hit[0], hit[1]
-                else:
-                    # Check if ray starts inside content (content larger than safe zone)
-                    far_hit = content_bvh.ray_cast(origin_local, dir_local)
-                    if not far_hit[0]:
-                        continue
-                    # Back-face test: normal same direction as ray means we're inside
-                    if far_hit[1].dot(dir_local) <= 0:
-                        continue
-                    hit_local = (origin_local + exit_local) * 0.5
-                    normal_local = -far_hit[1]
+            content_hit_points.append(best_point)
 
-                hit_world = content_mat @ hit_local
-                normal_world = (content_normal_mat @ normal_local).normalized()
-
-                # Simple shading: use surface normal facing the projector
-                shade = max(0.15, normal_world.dot(
-                    (cam_origin - hit_world).normalized()))
-
-                hit_count += 1
-
-                # Set pixel (flip Y for PNG bottom-left origin)
-                flipped_y = (RES_Y - 1) - y
-                idx = (flipped_y * RES_X + x) * 4
-                pixels[idx]     = shade
-                pixels[idx + 1] = shade
-                pixels[idx + 2] = shade
-
-                content_hit_points.append(hit_world)
-
-            if x % 50 == 0:
-                print(f"  Column {x}/{RES_X}: {hit_count} hits / {total_traced} traced")
-
-        print(f"  Content hits: {hit_count} / {total_traced} traced "
-              f"({100*hit_count/max(1,total_traced):.1f}%)")
+        print(f"  Content hits: {hit_count} / {len(pixel_to_points)} pixels "
+              f"({100*hit_count/max(1,len(pixel_to_points)):.1f}%)")
 
         # Create Blender image
         img_name = "ProjectorImage"
@@ -560,7 +555,7 @@ def generate_laser_cloud():
         bg.alpha = 0.5
         bg.display_depth = 'FRONT'
 
-        # Visualization: content-hit fracture points
+        # Visualization: content-hit fracture points (the selected subset)
         if content_hit_points:
             create_obj_from_points(CONTENT_CLOUD_NAME, content_hit_points,
                                    color=(0.0, 1.0, 0.5, 1.0))
