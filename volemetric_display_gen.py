@@ -23,6 +23,14 @@ PROJ_RES_X    = 1280          # Native projector resolution
 PROJ_RES_Y    = 720
 INFLATE       = False         # True = 1px per ray pixel with gaps; False = filled 5x5 blocks
 
+# --- INPUT IMAGE MODE ---
+# Set to a PNG path to visualize which fracture points that image illuminates.
+# The image is sampled at RES_X x RES_Y (downscaled from 720p if needed).
+# Set to "" to disable.
+INPUT_IMAGE_PATH  = ""
+INPUT_CLOUD_NAME  = "InputImageCloud"   # Blender object for illuminated points
+INPUT_BRIGHTNESS_THRESHOLD = 0.5        # Pixel brightness above this = "lit"
+
 CUBE_NAME     = "Cube"
 CONTENT_NAME  = "ContentShape"   # 3D mesh to display (set "" to skip image gen)
 PCLOUD_NAME   = "PixelPerfectCloud"
@@ -680,7 +688,73 @@ def generate_laser_cloud():
         print(f"  Add a mesh named '{CONTENT_NAME}' to generate the illumination image.")
 
     # ----------------------------------------------
-    # 4. EXPORT
+    # 4. INPUT IMAGE → POINT CLOUD VISUALIZATION
+    # ----------------------------------------------
+    if INPUT_IMAGE_PATH:
+        print(f"\nLoading input image: {INPUT_IMAGE_PATH}")
+        # Load image into Blender
+        inp_img_name = "InputProjectorImage"
+        inp_img = bpy.data.images.get(inp_img_name)
+        if inp_img:
+            bpy.data.images.remove(inp_img)
+        try:
+            inp_img = bpy.data.images.load(INPUT_IMAGE_PATH)
+            inp_img.name = inp_img_name
+        except Exception as e:
+            inp_img = None
+            print(f"  ERROR: Could not load image: {e}")
+
+        if inp_img:
+            img_w, img_h = inp_img.width, inp_img.height
+            print(f"  Image size: {img_w}x{img_h}")
+            inp_pixels = list(inp_img.pixels)  # flat RGBA
+
+            illuminated_points = []
+            lit_count = 0
+
+            for (x, y), pts in pixel_to_points.items():
+                # Map ray-grid pixel (x, y) to image pixel
+                # Support both native res (256x144) and 720p (1280x720)
+                if img_w == RES_X and img_h == RES_Y:
+                    sample_x, sample_y = x, y
+                else:
+                    sample_x = int(x * img_w / RES_X)
+                    sample_y = int(y * img_h / RES_Y)
+
+                sample_x = min(sample_x, img_w - 1)
+                sample_y = min(sample_y, img_h - 1)
+
+                # PNG origin is bottom-left; ray grid y=0 is top
+                flipped_sy = (img_h - 1) - sample_y
+                idx = (flipped_sy * img_w + sample_x) * 4
+                r, g, b = inp_pixels[idx], inp_pixels[idx + 1], inp_pixels[idx + 2]
+                brightness = 0.299 * r + 0.587 * g + 0.114 * b
+
+                if brightness >= INPUT_BRIGHTNESS_THRESHOLD:
+                    lit_count += 1
+                    illuminated_points.extend(pts)
+
+            print(f"  Lit pixels: {lit_count} / {len(pixel_to_points)} "
+                  f"({100*lit_count/max(1,len(pixel_to_points)):.1f}%)")
+            print(f"  Illuminated fracture points: {len(illuminated_points)}")
+
+            if illuminated_points:
+                create_obj_from_points(INPUT_CLOUD_NAME, illuminated_points,
+                                       color=(0.2, 0.8, 1.0, 1.0))
+                print(f"  Created '{INPUT_CLOUD_NAME}' in scene")
+
+            # Add as camera background
+            cam.data.show_background_images = True
+            for bg in list(cam.data.background_images):
+                if bg.image and bg.image.name == inp_img_name:
+                    cam.data.background_images.remove(bg)
+            bg = cam.data.background_images.new()
+            bg.image = inp_img
+            bg.alpha = 0.5
+            bg.display_depth = 'FRONT'
+
+    # ----------------------------------------------
+    # 5. EXPORT
     # ----------------------------------------------
     if DO_EXPORT:
         total_points = helper_coords + fracture_coords
