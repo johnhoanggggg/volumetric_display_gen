@@ -10,32 +10,36 @@ from mathutils.bvhtree import BVHTree
 # -------------------------------------------------------------------
 # --- OUTPUT ---
 EXPORT_PATH   = "C:/Users/johnh/Downloads/LaserOutput.dxf"
-DO_EXPORT     = True  
+IMAGE_PATH    = "C:/Users/johnh/Downloads/ProjectorImage.png"
+DO_EXPORT     = True
+DO_EXPORT_IMAGE = True
 
 RES_X         = 256
 RES_Y         = 144
 
 CUBE_NAME     = "Cube"
+CONTENT_NAME  = "ContentShape"   # 3D mesh to display (set "" to skip image gen)
 PCLOUD_NAME   = "PixelPerfectCloud"
 HELPER_NAME   = "AlignmentHelpers"
+CONTENT_CLOUD_NAME = "ContentCloud"  # Visualization of content-hit fracture points
 VIZ_VOL_NAME  = "Debug_InnerVolume"
 VIZ_RAY_NAME  = "Debug_RayPaths"
 
 FIT_MODE      = 'FIT'
-ROTATE_90     = False         
-FLIP_X        = False         
-FLIP_Y        = False         
+ROTATE_90     = False
+FLIP_X        = False
+FLIP_Y        = False
 
-INNER_CUBE_SCALE = 0.8       
+INNER_CUBE_SCALE = 0.8
 
 # --- DENSITY ---
-PIXEL_STEP    = 1           
-POINTS_PER_RAY = 1 
+PIXEL_STEP    = 1
+POINTS_PER_RAY = 1
 POINT_RADIUS  = 0.00005
 
 # --- VISIBILITY ---
 # Discard cloud points within this many pixels of the border/helpers
-HELPER_MARGIN = 1  
+HELPER_MARGIN = 1
 
 # --- ALIGNMENT BORDER ---
 PROJECTOR_HFOV_DEG = 37.6   # Measured projector HFOV (border maps to this)
@@ -425,7 +429,133 @@ def generate_laser_cloud():
     create_obj_from_points(HELPER_NAME, helper_coords, color=(1.0, 0.2, 0.0, 1.0))
 
     # ----------------------------------------------
-    # 3. EXPORT
+    # 3. PROJECTOR IMAGE (content-targeted illumination)
+    # ----------------------------------------------
+    content = bpy.data.objects.get(CONTENT_NAME) if CONTENT_NAME else None
+    content_hit_points = []
+
+    if content:
+        print(f"\nGenerating projector image for '{CONTENT_NAME}'...")
+
+        # Build BVH for content mesh
+        for poly in content.data.polygons:
+            poly.use_smooth = False
+        content.data.update()
+        content_bvh = BVHTree.FromObject(content, depsgraph)
+        content_mat = content.matrix_world
+        content_mat_inv = content_mat.inverted()
+        content_normal_mat = content_mat_inv.transposed().to_3x3()
+
+        # Allocate RGBA pixel buffer (black with full alpha)
+        pixels = [0.0, 0.0, 0.0, 1.0] * (RES_X * RES_Y)
+        hit_count = 0
+        total_traced = 0
+
+        for x in range(0, RES_X, PIXEL_STEP):
+            for y in range(0, RES_Y, PIXEL_STEP):
+                cam_x, cam_y = proj_to_cam(x, y)
+                res = get_ray_interval(cam_x, cam_y, box_min_inner, box_max_inner)
+                if not res:
+                    continue
+                total_traced += 1
+
+                r_orig, r_dir, t_in, t_out = res
+
+                # Convert ray segment endpoints to world space
+                p_enter_world = cube_mat @ (r_orig + r_dir * t_in)
+                p_exit_world = cube_mat @ (r_orig + r_dir * t_out)
+
+                # Transform ray into content's local space
+                origin_local = content_mat_inv @ p_enter_world
+                exit_local = content_mat_inv @ p_exit_world
+                local_vec = exit_local - origin_local
+                ray_len_local = local_vec.length
+                if ray_len_local < 1e-9:
+                    continue
+                dir_local = local_vec.normalized()
+
+                # Cast ray against content mesh within the safe zone segment
+                hit = content_bvh.ray_cast(origin_local, dir_local, ray_len_local)
+
+                if hit[0]:
+                    # Direct hit within safe zone
+                    hit_local, normal_local = hit[0], hit[1]
+                else:
+                    # Check if ray starts inside content (content larger than safe zone)
+                    far_hit = content_bvh.ray_cast(origin_local, dir_local)
+                    if not far_hit[0]:
+                        continue
+                    # Back-face test: normal same direction as ray means we're inside
+                    if far_hit[1].dot(dir_local) <= 0:
+                        continue
+                    hit_local = (origin_local + exit_local) * 0.5
+                    normal_local = -far_hit[1]
+
+                hit_world = content_mat @ hit_local
+                normal_world = (content_normal_mat @ normal_local).normalized()
+
+                # Simple shading: use surface normal facing the projector
+                shade = max(0.15, normal_world.dot(
+                    (cam_origin - hit_world).normalized()))
+
+                hit_count += 1
+
+                # Set pixel (flip Y for PNG bottom-left origin)
+                flipped_y = (RES_Y - 1) - y
+                idx = (flipped_y * RES_X + x) * 4
+                pixels[idx]     = shade
+                pixels[idx + 1] = shade
+                pixels[idx + 2] = shade
+
+                content_hit_points.append(hit_world)
+
+            if x % 50 == 0:
+                print(f"  Column {x}/{RES_X}: {hit_count} hits / {total_traced} traced")
+
+        print(f"  Content hits: {hit_count} / {total_traced} traced "
+              f"({100*hit_count/max(1,total_traced):.1f}%)")
+
+        # Create Blender image
+        img_name = "ProjectorImage"
+        img = bpy.data.images.get(img_name)
+        if img:
+            bpy.data.images.remove(img)
+        img = bpy.data.images.new(img_name, RES_X, RES_Y, alpha=False)
+        img.pixels = pixels
+
+        if DO_EXPORT_IMAGE:
+            try:
+                img.filepath_raw = IMAGE_PATH
+                img.file_format = 'PNG'
+                img.save()
+                print(f"  Projector image saved: {IMAGE_PATH}")
+            except Exception as e:
+                print(f"  WARNING: Could not save image: {e}")
+                print("  (Image still available in Blender as 'ProjectorImage')")
+
+        # Add image as camera background for verification
+        cam.data.show_background_images = True
+        for bg in list(cam.data.background_images):
+            if bg.image and bg.image.name == img_name:
+                cam.data.background_images.remove(bg)
+        bg = cam.data.background_images.new()
+        bg.image = img
+        bg.alpha = 0.5
+        bg.display_depth = 'FRONT'
+
+        # Visualization: content-hit fracture points
+        if content_hit_points:
+            create_obj_from_points(CONTENT_CLOUD_NAME, content_hit_points,
+                                   color=(0.0, 1.0, 0.5, 1.0))
+            print(f"  Content point cloud: '{CONTENT_CLOUD_NAME}' "
+                  f"({len(content_hit_points)} points)")
+    elif CONTENT_NAME:
+        print(f"\nWARNING: No object named '{CONTENT_NAME}' in scene — "
+              f"skipping projector image generation.")
+        print(f"  Add a mesh named '{CONTENT_NAME}' to generate the illumination image.")
+
+    # ----------------------------------------------
+    # 4. EXPORT
     # ----------------------------------------------
     if DO_EXPORT:
         total_points = helper_coords + fracture_coords
