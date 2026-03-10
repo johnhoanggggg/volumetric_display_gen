@@ -49,6 +49,7 @@ INNER_CUBE_SCALE = 0.8
 # --- DENSITY ---
 PIXEL_STEP    = 1
 POINTS_PER_RAY = 1
+RANDOM_SEED   = 42            # Fixed seed for reproducible point placement (None = random each run)
 POINT_RADIUS  = 0.00005
 
 # --- VISIBILITY ---
@@ -465,6 +466,8 @@ def generate_laser_cloud():
     # Also record which pixel produced each fracture point so we can
     # later decide which pixels to illuminate based on content proximity.
     print(f"Generating Cloud ({RES_X}x{RES_Y})...")
+    if RANDOM_SEED is not None:
+        random.seed(RANDOM_SEED)
     fracture_coords = []
     pixel_to_points = {}   # (x, y) -> list of world-space Vector points
 
