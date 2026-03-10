@@ -45,7 +45,7 @@ ROTATE_90     = False
 FLIP_X        = False
 FLIP_Y        = False
 
-INNER_CUBE_SCALE = 0.8
+INNER_CUBE_SCALE = 0.9
 
 # --- DENSITY ---
 PIXEL_STEP    = 1
@@ -513,8 +513,8 @@ def generate_laser_cloud():
     # not the Blender camera edges. Every DEPTH_INTERLEAVE_N points alternate
     # between +/- depth offset for parallax verification.
     BORDER_BASE_DEPTH   = 0.5    # Mid-depth through the glass
-    DEPTH_INTERLEAVE_N  = 5      # Every N points, apply a depth offset
-    DEPTH_OFFSET_AMOUNT = 0.15   # Depth offset (fraction of ray segment)
+    DEPTH_INTERLEAVE_N  = 20     # Every N points, apply a depth offset
+    DEPTH_OFFSET_AMOUNT = 0.25   # Depth offset (fraction of ray segment)
     BORDER_PIXEL_STEP   = 1      # Trace every Nth projector pixel
 
     print("Generating Alignment Border...")
