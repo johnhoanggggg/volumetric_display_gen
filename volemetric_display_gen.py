@@ -572,7 +572,7 @@ def generate_laser_cloud():
                         else:
                             tx, ty = mid_px + sign * t, mid_py
                         tcx, tcy = proj_to_cam(tx, ty)
-                        tpt = trace_border_point(tcx, tcy, depth=BORDER_BASE_DEPTH + DEPTH_OFFSET_AMOUNT)
+                        tpt = trace_border_point(tcx, tcy, BORDER_BASE_DEPTH + DEPTH_OFFSET_AMOUNT)
                         if tpt:
                             helper_coords.append(tpt)
                     seg_points = []
@@ -590,7 +590,7 @@ def generate_laser_cloud():
                 else:
                     tx, ty = mid_px + sign * t, mid_py
                 tcx, tcy = proj_to_cam(tx, ty)
-                tpt = trace_border_point(tcx, tcy, depth=BORDER_BASE_DEPTH + DEPTH_OFFSET_AMOUNT)
+                tpt = trace_border_point(tcx, tcy, BORDER_BASE_DEPTH + DEPTH_OFFSET_AMOUNT)
                 if tpt:
                     helper_coords.append(tpt)
 
