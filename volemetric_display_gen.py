@@ -54,7 +54,7 @@ RANDOM_SEED   = 42            # Fixed seed for reproducible point placement (Non
 POINT_RADIUS  = 0.00005
 
 # --- INNER CUBE EDGES ---
-EDGE_POINTS_PER_EDGE = 50   # Number of fracture points along each edge
+EDGE_POINT_DENSITY = 1.0    # Points per local-space unit along each edge
 
 # --- VISIBILITY ---
 # Discard cloud points within this many pixels of the border/helpers
@@ -628,12 +628,14 @@ def generate_laser_cloud():
 
     for a_idx, b_idx in edges:
         a, b = corners[a_idx], corners[b_idx]
-        for i in range(EDGE_POINTS_PER_EDGE):
-            t = (i + 0.5) / EDGE_POINTS_PER_EDGE
+        length = (b - a).length
+        n_pts = max(1, round(length * EDGE_POINT_DENSITY))
+        for i in range(n_pts):
+            t = (i + 0.5) / n_pts
             p_local = a.lerp(b, t)
             edge_coords.append(cube_mat @ p_local)
 
-    print(f"  {len(edge_coords)} edge points (12 edges x {EDGE_POINTS_PER_EDGE})")
+    print(f"  {len(edge_coords)} edge points (12 edges, {EDGE_POINT_DENSITY} pts/unit)")
     create_obj_from_points(EDGE_NAME, edge_coords, color=(0.0, 0.6, 1.0, 1.0))
 
     # ----------------------------------------------
