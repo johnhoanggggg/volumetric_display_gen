@@ -577,7 +577,6 @@ def generate_laser_cloud():
         content_bvh = BVHTree.FromObject(content, depsgraph)
         content_mat = content.matrix_world
         content_mat_inv = content_mat.inverted()
-        content_normal_mat = content_mat_inv.transposed().to_3x3()
 
         # Allocate RGBA pixel buffer (black with full alpha)
         pixels = [0.0, 0.0, 0.0, 1.0] * (RES_X * RES_Y)
@@ -587,7 +586,6 @@ def generate_laser_cloud():
             # For each fracture point belonging to this pixel,
             # find the nearest surface point on the content mesh.
             best_dist = float('inf')
-            best_normal_world = None
             best_point = None
 
             for p_world in pts:
@@ -601,25 +599,18 @@ def generate_laser_cloud():
                 if dist < best_dist:
                     best_dist = dist
                     best_point = p_world
-                    best_normal_world = (content_normal_mat @ nearest[1]).normalized()
 
             if best_dist > SURFACE_THRESHOLD:
                 continue
 
             hit_count += 1
 
-            # Shade by surface normal facing the projector
-            shade = 1.0
-            if best_normal_world:
-                shade = max(0.15, best_normal_world.dot(
-                    (cam_origin - best_point).normalized()))
-
             # Set pixel (flip Y for PNG bottom-left origin)
             flipped_y = (RES_Y - 1) - y
             idx = (flipped_y * RES_X + x) * 4
-            pixels[idx]     = shade
-            pixels[idx + 1] = shade
-            pixels[idx + 2] = shade
+            pixels[idx]     = 1.0
+            pixels[idx + 1] = 1.0
+            pixels[idx + 2] = 1.0
 
             content_hit_points.append(best_point)
 
