@@ -18,6 +18,11 @@ DO_EXPORT_IMAGE = True
 RES_X         = 256
 RES_Y         = 144
 
+# --- PROJECTOR OUTPUT ---
+PROJ_RES_X    = 1280          # Native projector resolution
+PROJ_RES_Y    = 720
+INFLATE       = False         # True = 1px per ray pixel with gaps; False = filled 5x5 blocks
+
 CUBE_NAME     = "Cube"
 CONTENT_NAME  = "ContentShape"   # 3D mesh to display (set "" to skip image gen)
 PCLOUD_NAME   = "PixelPerfectCloud"
@@ -578,23 +583,19 @@ def generate_laser_cloud():
         content_mat = content.matrix_world
         content_mat_inv = content_mat.inverted()
 
-        # Allocate RGBA pixel buffer (black with full alpha)
-        pixels = [0.0, 0.0, 0.0, 1.0] * (RES_X * RES_Y)
+        # Determine which pixels hit the content surface
+        hit_pixels = {}  # (x, y) -> best_point
         hit_count = 0
 
         for (x, y), pts in pixel_to_points.items():
-            # For each fracture point belonging to this pixel,
-            # find the nearest surface point on the content mesh.
             best_dist = float('inf')
             best_point = None
 
             for p_world in pts:
-                # Transform fracture point into content's local space
                 p_local = content_mat_inv @ p_world
                 nearest = content_bvh.find_nearest(p_local)
                 if nearest[0] is None:
                     continue
-                # nearest = (location, normal, index, distance)
                 dist = nearest[3]
                 if dist < best_dist:
                     best_dist = dist
@@ -604,25 +605,47 @@ def generate_laser_cloud():
                 continue
 
             hit_count += 1
-
-            # Set pixel (flip Y for PNG bottom-left origin)
-            flipped_y = (RES_Y - 1) - y
-            idx = (flipped_y * RES_X + x) * 4
-            pixels[idx]     = 1.0
-            pixels[idx + 1] = 1.0
-            pixels[idx + 2] = 1.0
-
+            hit_pixels[(x, y)] = best_point
             content_hit_points.append(best_point)
 
         print(f"  Content hits: {hit_count} / {len(pixel_to_points)} pixels "
               f"({100*hit_count/max(1,len(pixel_to_points)):.1f}%)")
+
+        # Upscale to projector native resolution (720p)
+        scale_x = PROJ_RES_X // RES_X  # 5
+        scale_y = PROJ_RES_Y // RES_Y  # 5
+        pixels = [0.0, 0.0, 0.0, 1.0] * (PROJ_RES_X * PROJ_RES_Y)
+
+        for (x, y) in hit_pixels:
+            flipped_y = (RES_Y - 1) - y
+            if INFLATE:
+                # Single pixel at mapped position (4px gap between neighbors)
+                out_x = x * scale_x
+                out_y = flipped_y * scale_y
+                idx = (out_y * PROJ_RES_X + out_x) * 4
+                pixels[idx]     = 1.0
+                pixels[idx + 1] = 1.0
+                pixels[idx + 2] = 1.0
+            else:
+                # Fill scale_x * scale_y block (nearest-neighbor upscale)
+                base_x = x * scale_x
+                base_y = flipped_y * scale_y
+                for dy in range(scale_y):
+                    for dx in range(scale_x):
+                        idx = ((base_y + dy) * PROJ_RES_X + (base_x + dx)) * 4
+                        pixels[idx]     = 1.0
+                        pixels[idx + 1] = 1.0
+                        pixels[idx + 2] = 1.0
+
+        mode_label = "INFLATE (1px per ray)" if INFLATE else f"FILLED ({scale_x}x{scale_y} blocks)"
+        print(f"  Output: {PROJ_RES_X}x{PROJ_RES_Y} — {mode_label}")
 
         # Create Blender image
         img_name = "ProjectorImage"
         img = bpy.data.images.get(img_name)
         if img:
             bpy.data.images.remove(img)
-        img = bpy.data.images.new(img_name, RES_X, RES_Y, alpha=False)
+        img = bpy.data.images.new(img_name, PROJ_RES_X, PROJ_RES_Y, alpha=False)
         img.pixels = pixels
 
         if DO_EXPORT_IMAGE:
