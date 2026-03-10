@@ -35,6 +35,7 @@ CUBE_NAME     = "Cube"
 CONTENT_NAME  = "ContentShape"   # 3D mesh to display (set "" to skip image gen)
 PCLOUD_NAME   = "PixelPerfectCloud"
 HELPER_NAME   = "AlignmentHelpers"
+EDGE_NAME     = "InnerCubeEdges"
 CONTENT_CLOUD_NAME = "ContentCloud"  # Visualization of content-hit fracture points
 VIZ_VOL_NAME  = "Debug_InnerVolume"
 VIZ_RAY_NAME  = "Debug_RayPaths"
@@ -51,6 +52,9 @@ PIXEL_STEP    = 1
 POINTS_PER_RAY = 1
 RANDOM_SEED   = 42            # Fixed seed for reproducible point placement (None = random each run)
 POINT_RADIUS  = 0.00005
+
+# --- INNER CUBE EDGES ---
+EDGE_POINTS_PER_EDGE = 50   # Number of fracture points along each edge
 
 # --- VISIBILITY ---
 # Discard cloud points within this many pixels of the border/helpers
@@ -598,6 +602,41 @@ def generate_laser_cloud():
     create_obj_from_points(HELPER_NAME, helper_coords, color=(1.0, 0.2, 0.0, 1.0))
 
     # ----------------------------------------------
+    # 2b. INNER CUBE EDGE MICROFRACTURES
+    # ----------------------------------------------
+    # Place fracture points along all 12 edges of the inner safe-zone cube.
+    # These are NOT illuminated by the projector — they serve as physical
+    # registration marks visible under ambient light.
+    print("Generating Inner Cube Edge fractures...")
+    edge_coords = []
+
+    corners = [
+        Vector((-s_in, -s_in, -s_in)),
+        Vector(( s_in, -s_in, -s_in)),
+        Vector(( s_in,  s_in, -s_in)),
+        Vector((-s_in,  s_in, -s_in)),
+        Vector((-s_in, -s_in,  s_in)),
+        Vector(( s_in, -s_in,  s_in)),
+        Vector(( s_in,  s_in,  s_in)),
+        Vector((-s_in,  s_in,  s_in)),
+    ]
+    edges = [
+        (0,1),(1,2),(2,3),(3,0),  # front face
+        (4,5),(5,6),(6,7),(7,4),  # back face
+        (0,4),(1,5),(2,6),(3,7),  # connecting
+    ]
+
+    for a_idx, b_idx in edges:
+        a, b = corners[a_idx], corners[b_idx]
+        for i in range(EDGE_POINTS_PER_EDGE):
+            t = (i + 0.5) / EDGE_POINTS_PER_EDGE
+            p_local = a.lerp(b, t)
+            edge_coords.append(cube_mat @ p_local)
+
+    print(f"  {len(edge_coords)} edge points (12 edges x {EDGE_POINTS_PER_EDGE})")
+    create_obj_from_points(EDGE_NAME, edge_coords, color=(0.0, 0.6, 1.0, 1.0))
+
+    # ----------------------------------------------
     # 3. PROJECTOR IMAGE (content-targeted illumination)
     # ----------------------------------------------
     # For each pixel's fracture point(s), find the nearest point on the
@@ -801,7 +840,7 @@ def generate_laser_cloud():
     # 5. EXPORT
     # ----------------------------------------------
     if DO_EXPORT:
-        total_points = helper_coords + fracture_coords
+        total_points = helper_coords + fracture_coords + edge_coords
         write_dxf_points(EXPORT_PATH, total_points)
 
         config_path = os.path.splitext(EXPORT_PATH)[0] + "_config.txt"
