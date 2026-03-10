@@ -556,24 +556,23 @@ def generate_laser_cloud():
 
     for label, pixel_list in border_edges:
         count = 0
+        back_count = 0           # tracks back-plane points for FOV probe
         n_pixels = len(pixel_list)
-        # Total number of back-plane segments on this edge
-        n_back_segs = max(1, n_pixels // (DEPTH_INTERLEAVE_N * 2))
-
         for proj_px, proj_py in pixel_list:
             # Interweaved depth: alternate +/- offset every N points
-            seg_index = count // DEPTH_INTERLEAVE_N  # which segment (0,1,2,3,...)
-            is_back = (seg_index % 2 == 0)
-            back_seg = seg_index // 2                # which back-plane segment (0,1,2,...)
+            group = (count // DEPTH_INTERLEAVE_N) % 2
+            is_back = (group == 0)
 
             if is_back:
                 depth = BORDER_BASE_DEPTH + DEPTH_OFFSET_AMOUNT
             else:
                 depth = BORDER_BASE_DEPTH - DEPTH_OFFSET_AMOUNT
 
-            if is_back and back_seg % 2 == 1 and FOV_PROBE_RANGE > 0:
-                # Every second back-plane segment: offset FOV sweeping -range to +range
-                frac = back_seg / max(1, n_back_segs - 1)
+            if is_back and back_count % 2 == 1 and FOV_PROBE_RANGE > 0:
+                # Every second back-plane point: offset FOV sweeping -range to +range
+                # Count how many back-plane points total on this edge for interpolation
+                n_back = n_pixels // 2  # approximate
+                frac = back_count / max(1, n_back - 1)
                 fov_offset = -FOV_PROBE_RANGE + 2.0 * FOV_PROBE_RANGE * frac
                 cam_x, cam_y = proj_to_cam_with_hfov(
                     proj_px, proj_py, PROJECTOR_HFOV_DEG + fov_offset)
@@ -584,6 +583,8 @@ def generate_laser_cloud():
             if pt:
                 helper_coords.append(pt)
 
+            if is_back:
+                back_count += 1
             count += 1
 
     create_obj_from_points(HELPER_NAME, helper_coords, color=(1.0, 0.2, 0.0, 1.0))
