@@ -537,8 +537,11 @@ def generate_laser_cloud():
         ("RIGHT",  [(proj_x_max, ppy) for ppy in range(proj_y_min, proj_y_max + 1, BORDER_PIXEL_STEP)]),
     ]
 
+    TICK_LENGTH_PX = 3  # perpendicular tick length in projector pixels
+
     for label, pixel_list in border_edges:
         count = 0
+        seg_points = []  # accumulate points in current segment
         for proj_px, proj_py in pixel_list:
             cam_x, cam_y = proj_to_cam(proj_px, proj_py)
 
@@ -552,7 +555,44 @@ def generate_laser_cloud():
             pt = trace_border_point(cam_x, cam_y, depth)
             if pt:
                 helper_coords.append(pt)
+
+            # Track back-plane segment pixels for midpoint tick
+            if group == 0:
+                seg_points.append((proj_px, proj_py))
+            else:
+                # Segment just ended — add perpendicular tick at midpoint
+                if seg_points:
+                    mid_px, mid_py = seg_points[len(seg_points) // 2]
+                    is_horiz = label in ("TOP", "BOTTOM")
+                    # Tick direction: inward (toward center of border)
+                    sign = 1 if label in ("TOP", "LEFT") else -1
+                    for t in range(1, TICK_LENGTH_PX + 1):
+                        if is_horiz:
+                            tx, ty = mid_px, mid_py + sign * t
+                        else:
+                            tx, ty = mid_px + sign * t, mid_py
+                        tcx, tcy = proj_to_cam(tx, ty)
+                        tpt = trace_border_point(tcx, tcy, depth=BORDER_BASE_DEPTH + DEPTH_OFFSET_AMOUNT)
+                        if tpt:
+                            helper_coords.append(tpt)
+                    seg_points = []
+
             count += 1
+
+        # Handle last segment if it was back-plane
+        if seg_points:
+            mid_px, mid_py = seg_points[len(seg_points) // 2]
+            is_horiz = label in ("TOP", "BOTTOM")
+            sign = 1 if label in ("TOP", "LEFT") else -1
+            for t in range(1, TICK_LENGTH_PX + 1):
+                if is_horiz:
+                    tx, ty = mid_px, mid_py + sign * t
+                else:
+                    tx, ty = mid_px + sign * t, mid_py
+                tcx, tcy = proj_to_cam(tx, ty)
+                tpt = trace_border_point(tcx, tcy, depth=BORDER_BASE_DEPTH + DEPTH_OFFSET_AMOUNT)
+                if tpt:
+                    helper_coords.append(tpt)
 
     create_obj_from_points(HELPER_NAME, helper_coords, color=(1.0, 0.2, 0.0, 1.0))
 
