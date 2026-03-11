@@ -14,7 +14,7 @@ from mathutils.bvhtree import BVHTree
 #   Part 2 — ALIGNMENT PATTERN: Aligns projector pose to Blender camera.
 #
 # ADDITIONAL FEATURES:
-#   Depth Probes      — Off-plane points to verify FOV, not just position.
+#   Depth Interleave  — Border points zigzag in depth for parallax verification.
 #   Vol Test Regions   — Volumetric display test patches across the FOV.
 #   Cluster Tests      — Different point clustering densities per voxel
 #                        (per Nayar & Anand, Columbia CUCS-030-06, 2006).
@@ -65,36 +65,34 @@ from mathutils.bvhtree import BVHTree
 #     Edge midpoints — Verify no roll. All 4 should be symmetric.
 #     Border frame   — With gaps where the FOV ruler crosses.
 #     Sparse grid    — Interior dots. Catch distortion or local error.
-#     Depth probes   — Off-plane points between grid dots. Only the
-#                      correct FOV will illuminate all probes + grid
-#                      simultaneously (parallax disambiguation).
+#     Depth interleave — Every Nth border point is offset in depth,
+#                      creating parallax verification built into the border.
 #
 # -------------------------------------------------------------------
-# DEPTH PROBES — FOV VERIFICATION
+# DEPTH INTERLEAVE — FOV VERIFICATION (replaces separate depth probes)
 #
-#   If all calibration points are coplanar, any FOV will work if you
-#   position the projector at the right distance. But depth-varied
-#   points introduce parallax: a wrong-FOV projector can match the
-#   on-plane grid dots by adjusting distance, but the off-plane probes
-#   will shift laterally. Only the correct FOV illuminates everything.
-#
-#   Probes are placed at pixel locations between alignment grid dots,
-#   at alternating front/back depths (checkerboard pattern).
+#   Every DEPTH_INTERLEAVE_N-th border point alternates ±DEPTH_INTERLEAVE_OFFSET
+#   in depth, creating a subtle zigzag. If the projector FOV is wrong,
+#   these offset points shift laterally due to parallax, breaking the
+#   clean border line. No separate probe objects needed.
 #
 # -------------------------------------------------------------------
 # VOLUMETRIC TEST REGIONS
 #
 #   Larger volumetric display test patches positioned above the bottom
-#   VFOV ruler, spread across the projector's horizontal FOV. Uses
-#   the projector's actual pixel step (5px) and 1 point per ray at
-#   random depth. Sanity check for volumetric display alignment.
+#   VFOV ruler, spread across the projector's horizontal FOV. Each
+#   region uses a different HFOV (from VOL_TEST_FOV_MIN to
+#   VOL_TEST_FOV_MAX) so you can see which FOV assumption produces
+#   correct alignment. Uses the projector's actual pixel step and
+#   1 point per ray at random depth.
 #
 # -------------------------------------------------------------------
-# CLUSTER TESTS (Nayar & Anand, 2006)
+# CLUSTER TESTS — NUCLEUS/ELECTRON MODEL (Nayar & Anand, 2006)
 #
-#   Multiple micro-fractures per voxel increase light scattering.
-#   Points are randomly distributed in a sphere around each voxel
-#   center (not on a grid), with configurable depth and lateral spread.
+#   Each test "atom" has a nucleus point (single fracture at mid-depth
+#   on the projector ray) surrounded by electron points distributed on
+#   a sphere shell around it.  Tests whether more micro-fractures per
+#   voxel increase perceived brightness of the holographic point.
 #   Compare brightness vs. diffusion tradeoffs empirically.
 #
 # -------------------------------------------------------------------
@@ -110,7 +108,7 @@ from mathutils.bvhtree import BVHTree
 #   6. Read the last glowing tick → that is your HFOV/VFOV
 #   7. Set PROJECTOR_HFOV_DEG to measured value (e.g. 37.6)
 #      (Blender camera can stay wider — alignment maps to projector FOV)
-#   8. Run with GENERATE_ALIGNMENT=True (and depth probes, clusters, etc.)
+#   8. Run with GENERATE_ALIGNMENT=True (and clusters, vol tests, etc.)
 #   9. Etch → align projector using test images
 #
 # ===================================================================
@@ -165,6 +163,15 @@ TICK_HEIGHT_TENTH = 14    # other tenths (short)
 # Center reference crosshair half-arm length
 CENTER_CROSS_LEN  = 25
 
+# Ruler tick pixel step — trace every Nth pixel along each tick line.
+# 1 = every pixel (dense), 3 = every 3rd pixel (sparse).
+RULER_TICK_STEP   = 3
+
+# Ruler tick width — number of pixels of lateral thickness per tick.
+# 1 = single pixel (hard to see from non-projector angles),
+# 3 = 3 pixels wide (visible in Blender viewport from other angles).
+RULER_TICK_WIDTH  = 3
+
 # Ruler tick depth range — ticks sweep from front to back so that
 # projector positioning errors don't affect FOV calibration.
 # If all ticks are coplanar, a lateral shift or tilt in the projector
@@ -179,7 +186,7 @@ RULER_DEPTH_BACK  = 0.80   # Depth at bottom/right end of tick (1=back face)
 # The measured projector HFOV. The alignment border maps to the
 # projector's edge pixels at this FOV, NOT the Blender camera edges.
 # VFOV is derived from the 16:9 aspect ratio automatically.
-PROJECTOR_HFOV_DEG = 37.6
+PROJECTOR_HFOV_DEG = 38
 CORNER_RADIUS_PX   = 5
 CROSSHAIR_LEN_PX   = 40
 EDGE_TICK_LEN_PX   = 15
@@ -198,12 +205,12 @@ RULER_GAP_MARGIN   = 5
 # 1280//5 = 256 pts per horizontal edge, 720//5 = 144 per vertical edge.
 BORDER_PIXEL_STEP  = 5
 
-# -------------------------------------------------------------------
-# DEPTH VERIFICATION PROBES CONFIG
-# -------------------------------------------------------------------
-GENERATE_DEPTH_PROBES = True
-DEPTH_FRONT           = 0.15   # Depth factor near front of safe zone (0=front)
-DEPTH_BACK            = 0.85   # Depth factor near back of safe zone (1=back)
+# Interleaved depth offsets on the border — every DEPTH_INTERLEAVE_N-th
+# border point is pushed forward or backward in depth by ±DEPTH_INTERLEAVE_OFFSET.
+# This creates a subtle zigzag that provides parallax verification:
+# a wrong FOV will show misaligned depth-offset points.
+DEPTH_INTERLEAVE_N      = 5     # Every Nth border point gets depth offset
+DEPTH_INTERLEAVE_OFFSET = 0.15  # Depth offset (± from base 0.5)
 
 # -------------------------------------------------------------------
 # VOLUMETRIC TEST REGIONS CONFIG
@@ -218,32 +225,34 @@ VOL_TEST_PPR           = 1     # Points per ray (1 = single random depth)
 VOL_TEST_PIXEL_STEP    = 5     # Trace every Nth pixel (projector renders 1 per 5)
 VOL_TEST_N_REGIONS     = 5     # Number of test regions across H FOV
 VOL_TEST_GAP_PX        = 10    # Gap above the bottom VFOV ruler
+VOL_TEST_FOV_MIN       = 37.0  # HFOV (deg) for leftmost region
+VOL_TEST_FOV_MAX       = 39.0  # HFOV (deg) for rightmost region
 
 # -------------------------------------------------------------------
-# POINT CLUSTERING TEST CONFIG
+# POINT CLUSTERING TEST CONFIG — NUCLEUS/ELECTRON MODEL
 # -------------------------------------------------------------------
-# Tests different point clustering configurations per pixel to evaluate
-# light diffusion, per Nayar & Anand (Columbia CUCS-030-06, 2006).
-# Multiple micro-fractures per voxel increase scattering. Points are
-# randomly distributed in a sphere around each voxel center (not on a
-# grid), with configurable depth and lateral (pixel) spread.
-GENERATE_CLUSTER_TEST  = True
-CLUSTER_TEST_SIZE_PX   = 4     # Half-size of each cluster test patch
-CLUSTER_TEST_SPACING   = 18    # Pixels between test patch centers
+# Each test "atom" has a nucleus point (single fracture at mid-depth on
+# the projector ray) surrounded by electron points on a sphere shell.
+# Tests whether more micro-fractures per voxel increase perceived
+# brightness of the holographic point (Nayar & Anand, 2006).
+GENERATE_CLUSTER_TEST   = True
+CLUSTER_TEST_ATOM_SPACING = 8   # Pixels between nucleus centers within a patch
+CLUSTER_TEST_PATCH_ATOMS  = 3   # NxN grid of atoms per config patch
+CLUSTER_TEST_SPACING      = 18  # Pixels between patch centers
 CLUSTER_CONFIGS = [
-    # (label, points_per_voxel, depth_spread, pixel_spread_px)
-    # depth_spread: fraction of ray segment for depth radius
-    # pixel_spread_px: lateral radius in pixels (fractional OK)
-    ("1pt",       1,  0.00, 0.0),  # Single point (baseline)
-    ("2pt_tight", 2,  0.02, 0.5),  # 2 points, very tight sphere
-    ("2pt_wide",  2,  0.10, 2.0),  # 2 points, wider sphere
-    ("3pt_tight", 3,  0.02, 0.5),  # 3 points, tight sphere
-    ("3pt_wide",  3,  0.10, 2.0),  # 3 points, wider sphere
-    ("5pt_tight", 5,  0.03, 1.0),  # 5 points, tight cluster
-    ("5pt_wide",  5,  0.10, 3.0),  # 5 points, wider cluster
-    ("8pt_tight", 8,  0.03, 1.5),  # 8 points, tight dense
-    ("8pt_wide",  8,  0.10, 3.0),  # 8 points, wider spread
-    ("12pt_sph",  12, 0.15, 4.0),  # 12 points, large sphere
+    # (label, n_electrons, orbit_depth_spread, orbit_pixel_radius)
+    # orbit_depth_spread: fraction of ray segment for orbital depth radius
+    # orbit_pixel_radius: lateral radius in pixels for electron positions
+    ("nucleus",     0,  0.00, 0.0),  # Nucleus only (baseline)
+    ("1+1_tight",   1,  0.02, 0.3),  # 1 electron, tight orbit
+    ("1+2_tight",   2,  0.02, 0.3),  # 2 electrons, tight orbit
+    ("1+3_tight",   3,  0.03, 0.5),  # 3 electrons, tight orbit
+    ("1+5_tight",   5,  0.03, 0.5),  # 5 electrons, tight orbit
+    ("1+5_wide",    5,  0.08, 1.5),  # 5 electrons, wider orbit
+    ("1+8_tight",   8,  0.03, 0.5),  # 8 electrons, tight orbit
+    ("1+8_wide",    8,  0.08, 1.5),  # 8 electrons, wider orbit
+    ("1+12_tight", 12,  0.04, 0.8),  # 12 electrons, tight orbit
+    ("1+12_wide",  12,  0.10, 2.0),  # 12 electrons, wide orbit
 ]
 
 # -------------------------------------------------------------------
@@ -282,7 +291,6 @@ POINT_RADIUS     = 0.00005
 FOV_RULER_NAME      = "FOV_Ruler"
 ALIGNMENT_NAME      = "AlignmentPattern"
 ALIGN_BORDER_NAME   = "AlignmentBorder"
-DEPTH_PROBES_NAME   = "DepthProbes"
 VOL_TEST_NAME       = "VolTestRegions"
 CLUSTER_TEST_NAME   = "ClusterTests"
 
@@ -740,22 +748,27 @@ def generate_fov_ruler(trace):
         y_end = min(RES_Y - 1, y_center + half_h)
 
         ix_r = int(round(px_right))
-        if 0 <= ix_r < RES_X:
-            for y in range(y_start, y_end + 1):
-                t = (y - y_start) / max(1, y_end - y_start)
-                d = RULER_DEPTH_FRONT + (RULER_DEPTH_BACK - RULER_DEPTH_FRONT) * t
-                pt = trace(ix_r, y, d)
-                if pt:
-                    points.append(pt)
+        half_tw = RULER_TICK_WIDTH // 2
+        for wx in range(-half_tw, half_tw + 1):
+            ix = ix_r + wx
+            if 0 <= ix < RES_X:
+                for y in range(y_start, y_end + 1, RULER_TICK_STEP):
+                    t = (y - y_start) / max(1, y_end - y_start)
+                    d = RULER_DEPTH_FRONT + (RULER_DEPTH_BACK - RULER_DEPTH_FRONT) * t
+                    pt = trace(ix, y, d)
+                    if pt:
+                        points.append(pt)
 
         ix_l = int(round(px_left))
-        if 0 <= ix_l < RES_X:
-            for y in range(y_start, y_end + 1):
-                t = (y - y_start) / max(1, y_end - y_start)
-                d = RULER_DEPTH_FRONT + (RULER_DEPTH_BACK - RULER_DEPTH_FRONT) * t
-                pt = trace(ix_l, y, d)
-                if pt:
-                    points.append(pt)
+        for wx in range(-half_tw, half_tw + 1):
+            ix = ix_l + wx
+            if 0 <= ix < RES_X:
+                for y in range(y_start, y_end + 1, RULER_TICK_STEP):
+                    t = (y - y_start) / max(1, y_end - y_start)
+                    d = RULER_DEPTH_FRONT + (RULER_DEPTH_BACK - RULER_DEPTH_FRONT) * t
+                    pt = trace(ix, y, d)
+                    if pt:
+                        points.append(pt)
 
         fov = round(fov + HFOV_STEP_DEG, 1)
 
@@ -773,44 +786,58 @@ def generate_fov_ruler(trace):
         x_end = min(RES_X - 1, x_center + half_w)
 
         iy_b = int(round(py_bottom))
-        if 0 <= iy_b < RES_Y:
-            for x in range(x_start, x_end + 1):
-                t = (x - x_start) / max(1, x_end - x_start)
-                d = RULER_DEPTH_FRONT + (RULER_DEPTH_BACK - RULER_DEPTH_FRONT) * t
-                pt = trace(x, iy_b, d)
-                if pt:
-                    points.append(pt)
+        half_tw = RULER_TICK_WIDTH // 2
+        for wy in range(-half_tw, half_tw + 1):
+            iy = iy_b + wy
+            if 0 <= iy < RES_Y:
+                for x in range(x_start, x_end + 1, RULER_TICK_STEP):
+                    t = (x - x_start) / max(1, x_end - x_start)
+                    d = RULER_DEPTH_FRONT + (RULER_DEPTH_BACK - RULER_DEPTH_FRONT) * t
+                    pt = trace(x, iy, d)
+                    if pt:
+                        points.append(pt)
 
         iy_t = int(round(py_top))
-        if 0 <= iy_t < RES_Y:
-            for x in range(x_start, x_end + 1):
-                t = (x - x_start) / max(1, x_end - x_start)
-                d = RULER_DEPTH_FRONT + (RULER_DEPTH_BACK - RULER_DEPTH_FRONT) * t
-                pt = trace(x, iy_t, d)
-                if pt:
-                    points.append(pt)
+        for wy in range(-half_tw, half_tw + 1):
+            iy = iy_t + wy
+            if 0 <= iy < RES_Y:
+                for x in range(x_start, x_end + 1, RULER_TICK_STEP):
+                    t = (x - x_start) / max(1, x_end - x_start)
+                    d = RULER_DEPTH_FRONT + (RULER_DEPTH_BACK - RULER_DEPTH_FRONT) * t
+                    pt = trace(x, iy, d)
+                    if pt:
+                        points.append(pt)
 
         fov = round(fov + VFOV_STEP_DEG, 1)
 
-    # === CENTER REFERENCE CROSSHAIR (with depth sweep) ===
+    # === CENTER REFERENCE CROSSHAIR (with depth sweep + width) ===
+    half_tw = RULER_TICK_WIDTH // 2
     ch_y_start = y_center - CENTER_CROSS_LEN
     ch_y_end = y_center + CENTER_CROSS_LEN
-    for y in range(ch_y_start, ch_y_end + 1):
-        if 0 <= y < RES_Y:
-            t = (y - ch_y_start) / max(1, ch_y_end - ch_y_start)
-            d = RULER_DEPTH_FRONT + (RULER_DEPTH_BACK - RULER_DEPTH_FRONT) * t
-            pt = trace(x_center, y, d)
-            if pt:
-                points.append(pt)
+    for wx in range(-half_tw, half_tw + 1):
+        cx = x_center + wx
+        if not (0 <= cx < RES_X):
+            continue
+        for y in range(ch_y_start, ch_y_end + 1, RULER_TICK_STEP):
+            if 0 <= y < RES_Y:
+                t = (y - ch_y_start) / max(1, ch_y_end - ch_y_start)
+                d = RULER_DEPTH_FRONT + (RULER_DEPTH_BACK - RULER_DEPTH_FRONT) * t
+                pt = trace(cx, y, d)
+                if pt:
+                    points.append(pt)
     ch_x_start = x_center - CENTER_CROSS_LEN
     ch_x_end = x_center + CENTER_CROSS_LEN
-    for x in range(ch_x_start, ch_x_end + 1):
-        if 0 <= x < RES_X:
-            t = (x - ch_x_start) / max(1, ch_x_end - ch_x_start)
-            d = RULER_DEPTH_FRONT + (RULER_DEPTH_BACK - RULER_DEPTH_FRONT) * t
-            pt = trace(x, y_center, d)
-            if pt:
-                points.append(pt)
+    for wy in range(-half_tw, half_tw + 1):
+        cy = y_center + wy
+        if not (0 <= cy < RES_Y):
+            continue
+        for x in range(ch_x_start, ch_x_end + 1, RULER_TICK_STEP):
+            if 0 <= x < RES_X:
+                t = (x - ch_x_start) / max(1, ch_x_end - ch_x_start)
+                d = RULER_DEPTH_FRONT + (RULER_DEPTH_BACK - RULER_DEPTH_FRONT) * t
+                pt = trace(x, cy, d)
+                if pt:
+                    points.append(pt)
 
     print(f"FOV ruler: {len(points)} points")
     return points
@@ -848,7 +875,8 @@ def generate_alignment_pattern(trace):
     points = []
     border_points = []
     inset = ALIGNMENT_INSET_PX
-    d = 0.5  # Single depth for all on-plane features
+    d = 0.5  # Base depth for alignment features
+    border_counter = 0  # Counter for depth interleaving on border
 
     # All features use projector pixel coordinates via proj_to_cam().
     # This ensures every fracture point maps to an integer projector pixel.
@@ -921,12 +949,22 @@ def generate_alignment_pattern(trace):
     ruler_px_left = proj_cx - TICK_HEIGHT_WHOLE // 2 - gap
     ruler_px_right = proj_cx + TICK_HEIGHT_WHOLE // 2 + gap
 
+    # Helper: get depth for this border point with interleaving
+    def border_depth():
+        nonlocal border_counter
+        border_counter += 1
+        if border_counter % DEPTH_INTERLEAVE_N == 0:
+            # Alternate +/- offset
+            sign = 1 if (border_counter // DEPTH_INTERLEAVE_N) % 2 == 0 else -1
+            return d + sign * DEPTH_INTERLEAVE_OFFSET
+        return d
+
     # Top edge
     for ppx in range(proj_x_min, proj_x_max + 1, BORDER_PIXEL_STEP):
         if ruler_px_left <= ppx <= ruler_px_right:
             continue
         cam_x, cam_y = p2c(ppx, proj_y_min)
-        pt = trace(cam_x, cam_y, d)
+        pt = trace(cam_x, cam_y, border_depth())
         if pt: border_points.append(pt)
 
     # Bottom edge
@@ -934,7 +972,7 @@ def generate_alignment_pattern(trace):
         if ruler_px_left <= ppx <= ruler_px_right:
             continue
         cam_x, cam_y = p2c(ppx, proj_y_max)
-        pt = trace(cam_x, cam_y, d)
+        pt = trace(cam_x, cam_y, border_depth())
         if pt: border_points.append(pt)
 
     # Left edge
@@ -942,7 +980,7 @@ def generate_alignment_pattern(trace):
         if ruler_py_top <= ppy <= ruler_py_bot:
             continue
         cam_x, cam_y = p2c(proj_x_min, ppy)
-        pt = trace(cam_x, cam_y, d)
+        pt = trace(cam_x, cam_y, border_depth())
         if pt: border_points.append(pt)
 
     # Right edge
@@ -950,7 +988,7 @@ def generate_alignment_pattern(trace):
         if ruler_py_top <= ppy <= ruler_py_bot:
             continue
         cam_x, cam_y = p2c(proj_x_max, ppy)
-        pt = trace(cam_x, cam_y, d)
+        pt = trace(cam_x, cam_y, border_depth())
         if pt: border_points.append(pt)
 
     # === 5. SPARSE ALIGNMENT GRID (projector pixel space) ===
@@ -970,112 +1008,21 @@ def generate_alignment_pattern(trace):
     return points, border_points
 
 # -------------------------------------------------------------------
-# DEPTH VERIFICATION PROBES
-# -------------------------------------------------------------------
-def generate_depth_probes(trace):
-    """Generate off-plane verification points for FOV confirmation.
-
-    All probes use projector pixel coordinates so every fracture point
-    maps to a specific projector pixel.  Probes are placed between
-    alignment grid dots at alternating front/back depths.
-    """
-    scene = bpy.context.scene
-    cam = scene.camera
-    cam_hfov = get_camera_hfov(scene, cam)
-    cam_vfov = get_camera_vfov(scene, cam)
-
-    px_left, px_right, py_top, py_bottom = get_projector_pixel_bounds(
-        cam_hfov, cam_vfov)
-    p2c = lambda ppx, ppy: proj_to_cam(ppx, ppy, px_left, px_right,
-                                        py_top, py_bottom)
-    inset = ALIGNMENT_INSET_PX
-
-    points = []
-    probe_idx = 0
-
-    if not GRID_ENABLED:
-        print("Depth probes require GRID_ENABLED=True — skipping")
-        return points
-
-    # Grid positions in projector pixel space (same as alignment)
-    grid_pxs = [int(RES_X * col / GRID_COLS) for col in range(1, GRID_COLS)]
-    grid_pys = [int(RES_Y * row / GRID_ROWS) for row in range(1, GRID_ROWS)]
-
-    # --- Probes between horizontally adjacent grid dots ---
-    for gpy in grid_pys:
-        for col_idx in range(len(grid_pxs) - 1):
-            mid_px = (grid_pxs[col_idx] + grid_pxs[col_idx + 1]) // 2
-            depth = DEPTH_FRONT if (probe_idx % 2 == 0) else DEPTH_BACK
-            probe_idx += 1
-            if 0 <= mid_px < RES_X and 0 <= gpy < RES_Y:
-                cam_x, cam_y = p2c(mid_px, gpy)
-                pt = trace(cam_x, cam_y, depth)
-                if pt: points.append(pt)
-
-    # --- Probes between vertically adjacent grid dots ---
-    for gpx in grid_pxs:
-        for row_idx in range(len(grid_pys) - 1):
-            mid_py = (grid_pys[row_idx] + grid_pys[row_idx + 1]) // 2
-            depth = DEPTH_BACK if (probe_idx % 2 == 0) else DEPTH_FRONT
-            probe_idx += 1
-            if 0 <= gpx < RES_X and 0 <= mid_py < RES_Y:
-                cam_x, cam_y = p2c(gpx, mid_py)
-                pt = trace(cam_x, cam_y, depth)
-                if pt: points.append(pt)
-
-    # --- Corner depth probes (projector pixel space) ---
-    corner_offset = CORNER_RADIUS_PX + 8
-    corner_probes = [
-        (inset + corner_offset, inset + corner_offset, DEPTH_FRONT),
-        (RES_X - 1 - inset - corner_offset, inset + corner_offset, DEPTH_BACK),
-        (inset + corner_offset, RES_Y - 1 - inset - corner_offset, DEPTH_BACK),
-        (RES_X - 1 - inset - corner_offset,
-         RES_Y - 1 - inset - corner_offset, DEPTH_FRONT),
-    ]
-    for cpx, cpy, depth in corner_probes:
-        probe_idx += 1
-        if 0 <= cpx < RES_X and 0 <= cpy < RES_Y:
-            cam_x, cam_y = p2c(cpx, cpy)
-            pt = trace(cam_x, cam_y, depth)
-            if pt: points.append(pt)
-
-    # --- Edge midpoint depth probes (projector pixel space) ---
-    pcx = RES_X // 2
-    pcy = RES_Y // 2
-    edge_offset = EDGE_TICK_LEN_PX + 5
-    edge_probes = [
-        (pcx, inset + edge_offset, DEPTH_FRONT),
-        (pcx, RES_Y - 1 - inset - edge_offset, DEPTH_BACK),
-        (inset + edge_offset, pcy, DEPTH_FRONT),
-        (RES_X - 1 - inset - edge_offset, pcy, DEPTH_BACK),
-    ]
-    for epx, epy, depth in edge_probes:
-        probe_idx += 1
-        if 0 <= epx < RES_X and 0 <= epy < RES_Y:
-            cam_x, cam_y = p2c(epx, epy)
-            pt = trace(cam_x, cam_y, depth)
-            if pt: points.append(pt)
-
-    print(f"Depth probes: {len(points)} pts across {probe_idx} probes "
-          f"(d={DEPTH_FRONT} front, d={DEPTH_BACK} back)")
-    return points
-
-# -------------------------------------------------------------------
 # VOLUMETRIC TEST REGIONS
 # -------------------------------------------------------------------
 def generate_vol_test_regions(trace):
     """Generate volumetric display test patches across the projector's H FOV.
 
-    Regions span from VOL_TEST_GAP_PX above the bottom VFOV ruler to
-    VOL_TEST_GAP_PX above the top VFOV ruler, giving a tall vertical
-    extent.  Each region is VOL_TEST_SIZE_PX wide (in projector pixels)
-    and the full vertical span, traced at every VOL_TEST_PIXEL_STEP
-    pixels with VOL_TEST_PPR points per ray at random depth.
+    Each region uses a different HFOV (linearly interpolated from
+    VOL_TEST_FOV_MIN to VOL_TEST_FOV_MAX) for its projector-to-camera
+    pixel mapping.  This lets you visually compare which FOV assumption
+    produces correct alignment — the region that looks best tells you
+    your actual projector HFOV.
 
-    All points use projector pixel coordinates.  Each region records
-    its 2D->3D mapping: {(proj_px, proj_py): (world_x, world_y, world_z)}.
-    Alignment dots and depth probes are placed between adjacent regions.
-    Each region is labeled with its HFOV angle via tick-mark indicators.
+    Regions span from VOL_TEST_GAP_PX above the bottom VFOV ruler to
+    VOL_TEST_GAP_PX above the top VFOV ruler.  Each region is
+    VOL_TEST_SIZE_PX wide, traced at every VOL_TEST_PIXEL_STEP pixels
+    with VOL_TEST_PPR points per ray at random depth.
 
     Returns (points, inter_points, mapping) where mapping is the full
     projector-pixel to world-point dictionary.
@@ -1085,10 +1032,11 @@ def generate_vol_test_regions(trace):
     cam_hfov = get_camera_hfov(scene, cam)
     cam_vfov = get_camera_vfov(scene, cam)
 
+    # Use the main PROJECTOR_HFOV_DEG for layout (region positions, Y bounds)
     px_left, px_right, py_top, py_bottom = get_projector_pixel_bounds(
         cam_hfov, cam_vfov)
-    p2c = lambda ppx, ppy: proj_to_cam(ppx, ppy, px_left, px_right,
-                                        py_top, py_bottom)
+    p2c_layout = lambda ppx, ppy: proj_to_cam(ppx, ppy, px_left, px_right,
+                                               py_top, py_bottom)
 
     # Compute vertical extent in camera pixel space, then convert
     # back to projector pixel bounds.
@@ -1101,8 +1049,6 @@ def generate_vol_test_regions(trace):
     top_ruler_cam_y = int(RES_Y - vfov_to_pixel_y(VFOV_MIN_DEG, cam_vfov, win_py))
 
     # Convert camera Y to approximate projector Y
-    # cam_y = py_top + (py_bottom - py_top) * proj_y / (RES_Y - 1)
-    # => proj_y = (cam_y - py_top) / (py_bottom - py_top) * (RES_Y - 1)
     def cam_y_to_proj_y(cam_y):
         if abs(py_bottom - py_top) < 0.001:
             return RES_Y // 2
@@ -1111,7 +1057,6 @@ def generate_vol_test_regions(trace):
     # Region projector Y bounds: GAP above each ruler
     proj_y_bottom = cam_y_to_proj_y(bottom_ruler_cam_y) - VOL_TEST_GAP_PX
     proj_y_top = cam_y_to_proj_y(top_ruler_cam_y) - VOL_TEST_GAP_PX
-    # Clamp to valid projector pixel range
     proj_y_top = max(0, proj_y_top)
     proj_y_bottom = min(RES_Y - 1, proj_y_bottom)
 
@@ -1119,28 +1064,42 @@ def generate_vol_test_regions(trace):
     step = VOL_TEST_PIXEL_STEP
     n_regions = VOL_TEST_N_REGIONS
     points = []
-    inter_points = []  # Alignment + depth probes between regions
-    mapping = {}       # (proj_px, proj_py) -> (x, y, z) world coords
+    inter_points = []
+    mapping = {}
 
-    # Compute HFOV angle for each region
+    # Build per-region info with linearly interpolated FOV
     region_infos = []
     for i in range(n_regions):
         x_frac = (i + 1.0) / (n_regions + 1.0)
         proj_cx = int(RES_X * x_frac)
-        # Angle from center: tan(a) = (frac - 0.5)*2 * tan(HFOV/2)
-        angle_from_center = math.degrees(math.atan(
-            (x_frac - 0.5) * 2.0 *
-            math.tan(math.radians(PROJECTOR_HFOV_DEG / 2.0))))
-        hfov_at = abs(angle_from_center) * 2.0
-        region_infos.append((proj_cx, angle_from_center, hfov_at))
+
+        # Per-region FOV: linearly interpolate across regions
+        fov_t = i / max(1, n_regions - 1)
+        region_fov = VOL_TEST_FOV_MIN + (VOL_TEST_FOV_MAX - VOL_TEST_FOV_MIN) * fov_t
+
+        # Build per-region pixel mapping using this region's FOV
+        region_vfov = projector_vfov_from_hfov(region_fov)
+        rpx_right = hfov_to_pixel_x(region_fov, cam_hfov)
+        rpx_left = RES_X - rpx_right
+        rpy_bottom = vfov_to_pixel_y(region_vfov, cam_vfov)
+        rpy_top = RES_Y - rpy_bottom
+
+        region_infos.append((proj_cx, region_fov,
+                             rpx_left, rpx_right, rpy_top, rpy_bottom))
 
     height = proj_y_bottom - proj_y_top + 1
     print(f"Vol test: {n_regions} regions, {2*sz+1}px wide x {height}px tall, "
           f"step={step}, {VOL_TEST_PPR} PPR")
     print(f"  Projector Y range: {proj_y_top} to {proj_y_bottom}")
+    print(f"  Per-region FOV: {VOL_TEST_FOV_MIN:.1f} to {VOL_TEST_FOV_MAX:.1f} deg")
 
-    for i, (proj_cx, angle, hfov) in enumerate(region_infos):
+    for i, (proj_cx, region_fov,
+            rpx_left, rpx_right, rpy_top, rpy_bottom) in enumerate(region_infos):
         region_count = 0
+
+        # Per-region proj_to_cam using this region's FOV bounds
+        rp2c = lambda ppx, ppy, l=rpx_left, r=rpx_right, t=rpy_top, b=rpy_bottom: \
+            proj_to_cam(ppx, ppy, l, r, t, b)
 
         for ppx in range(proj_cx - sz, proj_cx + sz + 1, step):
             for ppy in range(proj_y_top, proj_y_bottom + 1, step):
@@ -1148,40 +1107,37 @@ def generate_vol_test_regions(trace):
                     continue
                 for _ in range(VOL_TEST_PPR):
                     d = random.uniform(0.05, 0.95)
-                    cam_x, cam_y = p2c(ppx, ppy)
+                    cam_x, cam_y = rp2c(ppx, ppy)
                     pt = trace(cam_x, cam_y, d)
                     if pt:
                         points.append(pt)
-                        # Record mapping (use center depth for mapping)
                         mapping[(ppx, ppy)] = (pt.x, pt.y, pt.z)
                         region_count += 1
 
-        # --- HFOV label: tick marks above region ---
+        # --- FOV label: tick marks above region ---
         # Region number indicator: i+1 horizontal dots above the region
         label_y = proj_y_top - 3
         if label_y >= 0:
             for dot in range(i + 1):
                 lx = proj_cx - (i) + dot * 2
                 if 0 <= lx < RES_X:
-                    cam_x, cam_y = p2c(lx, label_y)
+                    cam_x, cam_y = p2c_layout(lx, label_y)
                     pt = trace(cam_x, cam_y, 0.5)
                     if pt: inter_points.append(pt)
 
-        # Vertical HFOV connector line from region top to H ruler center
+        # Vertical connector line from region top to H ruler center
         # (dashed: every 3rd pixel)
         ruler_proj_y = RES_Y // 2
         conn_start = min(proj_y_top, ruler_proj_y)
         conn_end = max(proj_y_top, ruler_proj_y)
         for ppy in range(conn_start, conn_end + 1, 3):
             if 0 <= ppy < RES_Y and 0 <= proj_cx < RES_X:
-                cam_x, cam_y = p2c(proj_cx, ppy)
+                cam_x, cam_y = p2c_layout(proj_cx, ppy)
                 pt = trace(cam_x, cam_y, 0.5)
                 if pt: inter_points.append(pt)
 
-        side = "L" if angle < -0.5 else ("R" if angle > 0.5 else "C")
         print(f"  Region {i+1}/{n_regions}: proj_x={proj_cx}, "
-              f"angle={angle:+.1f} deg ({side}), "
-              f"HFOV={hfov:.1f} deg, {region_count} pts")
+              f"FOV={region_fov:.1f} deg, {region_count} pts")
 
     # --- Alignment dots and depth probes between adjacent regions ---
     for i in range(n_regions - 1):
@@ -1190,18 +1146,18 @@ def generate_vol_test_regions(trace):
         mid_px = (cx_a + cx_b) // 2
         mid_py = (proj_y_top + proj_y_bottom) // 2
 
-        # Alignment point (single point at mid-depth)
         if 0 <= mid_px < RES_X and 0 <= mid_py < RES_Y:
-            cam_x, cam_y = p2c(mid_px, mid_py)
+            cam_x, cam_y = p2c_layout(mid_px, mid_py)
             pt = trace(cam_x, cam_y, 0.5)
             if pt: inter_points.append(pt)
 
-        # Depth probes: single front point above midpoint, single back point below
         probe_offset = 15
-        for probe_py, depth in [(mid_py - probe_offset, DEPTH_FRONT),
-                                (mid_py + probe_offset, DEPTH_BACK)]:
+        for probe_py, depth in [(mid_py - probe_offset,
+                                  0.5 - DEPTH_INTERLEAVE_OFFSET),
+                                 (mid_py + probe_offset,
+                                  0.5 + DEPTH_INTERLEAVE_OFFSET)]:
             if 0 <= mid_px < RES_X and 0 <= probe_py < RES_Y:
-                cam_x, cam_y = p2c(mid_px, probe_py)
+                cam_x, cam_y = p2c_layout(mid_px, probe_py)
                 pt = trace(cam_x, cam_y, depth)
                 if pt: inter_points.append(pt)
 
@@ -1214,15 +1170,21 @@ def generate_vol_test_regions(trace):
 # POINT CLUSTERING TESTS
 # -------------------------------------------------------------------
 def generate_cluster_tests(trace):
-    """Generate test patches with different point clustering densities.
+    """Generate nucleus/electron cluster test patches.
 
-    Per Nayar & Anand (Columbia CUCS-030-06, 2006), multiple micro-fractures
-    per voxel increase light scattering. Points are randomly distributed in
-    a sphere around each voxel center (not on a grid), using rejection
-    sampling. The sphere has independent depth and lateral (pixel) radii.
+    Each test "atom" has a nucleus point (single fracture at mid-depth on
+    the projector ray) surrounded by electron points on a sphere shell.
+    This tests whether clustering more micro-fractures around a single
+    voxel increases its perceived brightness when illuminated by the
+    projector (per Nayar & Anand, Columbia CUCS-030-06, 2006).
 
-    Patches are arranged in a row in the lower portion of the projector FOV.
-    Each patch has a separator tick above it and a point-count indicator below.
+    Each config gets an NxN grid of atoms (CLUSTER_TEST_PATCH_ATOMS^2)
+    spaced CLUSTER_TEST_ATOM_SPACING pixels apart. Atoms within a patch
+    are far enough apart that their electron shells don't overlap.
+
+    Patches are arranged in a row in the lower portion of the projector
+    FOV. Each patch has a separator tick above it and an electron-count
+    indicator below.
     """
     scene = bpy.context.scene
     cam = scene.camera
@@ -1239,11 +1201,12 @@ def generate_cluster_tests(trace):
 
     points = []
     n_patches = len(CLUSTER_CONFIGS)
-    sz = CLUSTER_TEST_SIZE_PX
+    atom_n = CLUSTER_TEST_PATCH_ATOMS
+    atom_sp = CLUSTER_TEST_ATOM_SPACING
     spacing = CLUSTER_TEST_SPACING
 
-    # Total width needed for all patches
-    patch_width = 2 * sz + 1
+    # Patch footprint: NxN atoms spaced atom_sp pixels apart
+    patch_width = (atom_n - 1) * atom_sp
     total_width = n_patches * patch_width + (n_patches - 1) * spacing
 
     # Center the row horizontally within projector bounds
@@ -1253,65 +1216,76 @@ def generate_cluster_tests(trace):
     # Place in lower quarter of projector area
     cy_cluster = y_min + int((y_max - y_min) * 0.75)
 
-    for cfg_idx, (label, n_pts, depth_spread, pixel_spread) in enumerate(
+    for cfg_idx, (label, n_electrons, orbit_depth, orbit_px) in enumerate(
             CLUSTER_CONFIGS):
-        # Patch center pixel in camera space
-        patch_cx = start_x + cfg_idx * (patch_width + spacing) + sz
-        patch_cy = cy_cluster
+        # Patch top-left corner in camera pixel space
+        patch_origin_x = start_x + cfg_idx * (patch_width + spacing)
+        patch_origin_y = cy_cluster - patch_width // 2
 
-        patch_count = 0
-        for dx in range(-sz, sz + 1):
-            for dy_px in range(-sz, sz + 1):
-                px = patch_cx + dx
-                py = patch_cy + dy_px
-                if not (0 <= px < RES_X and 0 <= py < RES_Y):
+        patch_nuclei = 0
+        patch_electrons = 0
+
+        for ax in range(atom_n):
+            for ay in range(atom_n):
+                # Nucleus pixel position
+                nuc_px = patch_origin_x + ax * atom_sp
+                nuc_py = patch_origin_y + ay * atom_sp
+                if not (0 <= nuc_px < RES_X and 0 <= nuc_py < RES_Y):
                     continue
 
-                for j in range(n_pts):
-                    if n_pts == 1 or (depth_spread == 0 and pixel_spread == 0):
-                        # Single point, no spread
-                        pt = trace(px, py, 0.5)
-                    else:
-                        # Random point in unit sphere via rejection sampling
-                        while True:
-                            rx = random.uniform(-1, 1)
-                            ry = random.uniform(-1, 1)
-                            rz = random.uniform(-1, 1)
-                            if rx * rx + ry * ry + rz * rz <= 1.0:
-                                break
-                        # Scale to pixel and depth units
-                        target_px = px + rx * pixel_spread
-                        target_py = py + ry * pixel_spread
-                        d = 0.5 + rz * depth_spread / 2.0
-                        d = max(0.01, min(0.99, d))
-                        pt = trace(target_px, target_py, d)
+                # --- Nucleus: single point at mid-depth ---
+                pt = trace(nuc_px, nuc_py, 0.5)
+                if pt:
+                    points.append(pt)
+                    patch_nuclei += 1
 
+                # --- Electrons: distributed on sphere shell around nucleus ---
+                for j in range(n_electrons):
+                    # Uniform random point on sphere surface
+                    theta = random.uniform(0, 2 * math.pi)
+                    cos_phi = random.uniform(-1, 1)
+                    sin_phi = math.sqrt(1 - cos_phi * cos_phi)
+                    ex = sin_phi * math.cos(theta)
+                    ey = sin_phi * math.sin(theta)
+                    ez = cos_phi
+
+                    # Scale to pixel and depth units
+                    target_px = nuc_px + ex * orbit_px
+                    target_py = nuc_py + ey * orbit_px
+                    d = 0.5 + ez * orbit_depth / 2.0
+                    d = max(0.01, min(0.99, d))
+                    pt = trace(target_px, target_py, d)
                     if pt:
                         points.append(pt)
-                        patch_count += 1
+                        patch_electrons += 1
 
         # Separator tick above patch for visual identification
-        for tick_dy in range(-sz - 6, -sz - 2):
-            py = patch_cy + tick_dy
+        patch_cx = patch_origin_x + patch_width // 2
+        tick_top = patch_origin_y - patch_width // 2
+        for tick_dy in range(-6, -2):
+            py = tick_top + tick_dy
             if 0 <= py < RES_Y and 0 <= patch_cx < RES_X:
                 pt = trace(patch_cx, py, 0.5)
                 if pt:
                     points.append(pt)
 
-        # Point-count indicator below patch (n_pts horizontal dots)
-        for indicator in range(min(n_pts, 12)):
-            ix = patch_cx - min(n_pts, 12) // 2 + indicator * 2
-            iy = patch_cy + sz + 4
-            if 0 <= ix < RES_X and 0 <= iy < RES_Y:
-                pt = trace(ix, iy, 0.5)
+        # Electron-count indicator below patch (n_electrons horizontal dots)
+        indicator_count = max(1, min(n_electrons, 12))
+        indicator_y = patch_origin_y + patch_width + 4
+        for indicator in range(indicator_count):
+            ix = patch_cx - indicator_count // 2 + indicator * 2
+            if 0 <= ix < RES_X and 0 <= indicator_y < RES_Y:
+                pt = trace(ix, indicator_y, 0.5)
                 if pt:
                     points.append(pt)
 
-        print(f"  Cluster '{label}': {n_pts}pts, depth={depth_spread:.2f}, "
-              f"lateral={pixel_spread:.1f}px -> {patch_count} fractures")
+        total_per_atom = 1 + n_electrons
+        print(f"  Cluster '{label}': 1+{n_electrons} per atom, "
+              f"orbit=({orbit_depth:.2f}d, {orbit_px:.1f}px), "
+              f"{patch_nuclei} nuclei + {patch_electrons} electrons")
 
     print(f"Cluster tests: {len(points)} total pts "
-          f"across {n_patches} configs")
+          f"across {n_patches} configs ({atom_n}x{atom_n} atoms each)")
     return points
 
 # -------------------------------------------------------------------
@@ -1382,12 +1356,6 @@ def generate_calibration():
         all_points.extend(align_pts)
         all_points.extend(border_pts)
 
-    if GENERATE_DEPTH_PROBES:
-        print("\n--- Depth Verification Probes ---")
-        probe_pts = generate_depth_probes(trace)
-        create_obj_from_points(DEPTH_PROBES_NAME, probe_pts,
-                               color=(1.0, 0.0, 0.8, 1.0))  # Magenta
-        all_points.extend(probe_pts)
 
     vol_mapping = {}
     if GENERATE_VOL_TEST:

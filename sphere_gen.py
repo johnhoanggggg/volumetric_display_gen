@@ -1,5 +1,7 @@
 import bpy
 import math
+import os
+import json
 import bpy_extras
 from mathutils import Vector
 from mathutils.bvhtree import BVHTree
@@ -61,6 +63,106 @@ def write_dxf_points(filepath, points):
         print(f"SUCCESS: Exported {len(points)} points to {filepath}")
     except Exception as e:
         print(f"ERROR: Could not write DXF file: {e}")
+
+def write_config_txt(filepath, scene, cam, crystal_obj, content_obj):
+    """Export full setup configuration so a renderer can reconstruct the scene."""
+    def mat4_rows(m):
+        return [[m[row][col] for col in range(4)] for row in range(4)]
+    def vec3(v):
+        return [v.x, v.y, v.z]
+
+    # Camera frustum corners
+    frame = cam.data.view_frame(scene=scene)
+    mat = cam.matrix_world
+    tr, br, bl, tl = [mat @ v for v in frame]
+    cam_origin = mat.translation
+
+    # Camera FOV from sensor/lens
+    render = scene.render
+    focal = cam.data.lens
+    aspect_x = render.resolution_x * render.pixel_aspect_x
+    aspect_y = render.resolution_y * render.pixel_aspect_y
+    sensor_fit = cam.data.sensor_fit
+    if sensor_fit == 'HORIZONTAL' or (sensor_fit == 'AUTO' and aspect_x >= aspect_y):
+        sw = cam.data.sensor_width
+    else:
+        sw = cam.data.sensor_height * (aspect_x / aspect_y)
+    if sensor_fit == 'VERTICAL' or (sensor_fit == 'AUTO' and aspect_y > aspect_x):
+        sh = cam.data.sensor_height
+    else:
+        sh = cam.data.sensor_width * (aspect_y / aspect_x)
+    cam_hfov = math.degrees(2.0 * math.atan(sw / (2.0 * focal)))
+    cam_vfov = math.degrees(2.0 * math.atan(sh / (2.0 * focal)))
+
+    # Glass bounding box
+    local_bbox = [Vector(b) for b in crystal_obj.bound_box]
+    bbox_min = [min(v[i] for v in local_bbox) for i in range(3)]
+    bbox_max = [max(v[i] for v in local_bbox) for i in range(3)]
+    scale = crystal_obj.matrix_world.to_scale()
+    world_size = [(bbox_max[i] - bbox_min[i]) * abs(scale[i]) for i in range(3)]
+
+    config = {
+        "generator": "sphere_gen.py",
+
+        # --- Projector / Camera ---
+        "projector": {
+            "resolution": [RES_X, RES_Y],
+            "full_resolution": [1280, 720],
+            "downsample_factor": 4,
+            "camera_hfov_deg": round(cam_hfov, 6),
+            "camera_vfov_deg": round(cam_vfov, 6),
+            "camera_focal_length_mm": focal,
+            "camera_sensor_width_mm": cam.data.sensor_width,
+            "camera_sensor_height_mm": cam.data.sensor_height,
+            "camera_sensor_fit": sensor_fit,
+            "camera_position": vec3(cam_origin),
+            "camera_matrix_world": mat4_rows(cam.matrix_world),
+            "frustum_corners_world": {
+                "top_left": vec3(tl),
+                "top_right": vec3(tr),
+                "bottom_left": vec3(bl),
+                "bottom_right": vec3(br),
+            },
+        },
+
+        # --- Glass Block ---
+        "glass": {
+            "object_name": CRYSTAL_NAME,
+            "matrix_world": mat4_rows(crystal_obj.matrix_world),
+            "local_bbox_min": bbox_min,
+            "local_bbox_max": bbox_max,
+            "world_dimensions": world_size,
+            "margin_proportion": MARGIN_PROPORTION,
+        },
+
+        # --- Optics ---
+        "optics": {
+            "ior_outside": IOR_OUTSIDE,
+            "ior_inside": IOR_INSIDE,
+        },
+
+        # --- Content ---
+        "content": {
+            "object_name": CONTENT_NAME,
+            "matrix_world": mat4_rows(content_obj.matrix_world),
+        },
+
+        # --- Alignment ---
+        "alignment": {
+            "border_margin_px": BORDER_MARGIN,
+            "cam_inset_px": CAM_INSET_PX,
+            "circle_radius_px": CIRCLE_RADIUS_PX,
+            "frame_inset": FRAME_INSET,
+            "draw_crosshairs": DRAW_CROSSHAIRS,
+        },
+    }
+
+    try:
+        with open(filepath, 'w') as f:
+            json.dump(config, f, indent=2)
+        print(f"SUCCESS: Exported config to {filepath}")
+    except Exception as e:
+        print(f"ERROR: Could not write config file: {e}")
 
 # -------------------------------------------------------------------
 # GEOMETRY & OPTICS
@@ -397,6 +499,9 @@ def generate_laser_cloud():
 
     if DO_EXPORT:
         write_dxf_points(EXPORT_PATH, helper_pts + cloud_pts + cam_bound_pts + circle_pts)
+
+        config_path = os.path.splitext(EXPORT_PATH)[0] + "_config.txt"
+        write_config_txt(config_path, scene, cam, crystal_obj, content_obj)
 
 if __name__ == "__main__":
     generate_laser_cloud()

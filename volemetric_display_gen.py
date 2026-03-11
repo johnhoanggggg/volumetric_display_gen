@@ -2,6 +2,7 @@ import bpy
 import math
 import random
 import os
+import json
 from mathutils import Vector, Matrix
 from mathutils.bvhtree import BVHTree
 
@@ -10,32 +11,64 @@ from mathutils.bvhtree import BVHTree
 # -------------------------------------------------------------------
 # --- OUTPUT ---
 EXPORT_PATH   = "C:/Users/johnh/Downloads/LaserOutput.dxf"
-DO_EXPORT     = True  
+IMAGE_PATH    = "C:/Users/johnh/Downloads/ProjectorImage.png"
+DO_EXPORT     = True
+DO_EXPORT_IMAGE = True
 
 RES_X         = 256
 RES_Y         = 144
 
+# --- PROJECTOR OUTPUT ---
+PROJ_RES_X    = 1280          # Native projector resolution
+PROJ_RES_Y    = 720
+INFLATE       = False         # True = 1px per ray pixel with gaps; False = filled 5x5 blocks
+
+# --- INPUT IMAGE MODE ---
+# Set to a PNG path to visualize which fracture points that image illuminates.
+# The image is sampled at RES_X x RES_Y (downscaled from 720p if needed).
+# Set to "" to disable.
+INPUT_IMAGE_PATH  = ""
+INPUT_CLOUD_NAME  = "InputImageCloud"   # Blender object for illuminated points
+INPUT_BRIGHTNESS_THRESHOLD = 0.5        # Pixel brightness above this = "lit"
+
 CUBE_NAME     = "Cube"
+CONTENT_NAME  = "ContentShape"   # 3D mesh to display (set "" to skip image gen)
 PCLOUD_NAME   = "PixelPerfectCloud"
 HELPER_NAME   = "AlignmentHelpers"
+EDGE_NAME     = "InnerCubeEdges"
+CONTENT_CLOUD_NAME = "ContentCloud"  # Visualization of content-hit fracture points
 VIZ_VOL_NAME  = "Debug_InnerVolume"
 VIZ_RAY_NAME  = "Debug_RayPaths"
 
 FIT_MODE      = 'FIT'
-ROTATE_90     = False         
-FLIP_X        = False         
-FLIP_Y        = False         
+ROTATE_90     = False
+FLIP_X        = False
+FLIP_Y        = False
 
-INNER_CUBE_SCALE = 0.8       
+INNER_CUBE_SCALE = 0.9
 
 # --- DENSITY ---
-PIXEL_STEP    = 1           
-POINTS_PER_RAY = 1 
+PIXEL_STEP    = 1
+POINTS_PER_RAY = 1
+RANDOM_SEED   = 42            # Fixed seed for reproducible point placement (None = random each run)
 POINT_RADIUS  = 0.00005
+
+# --- INNER CUBE EDGES ---
+EDGE_POINT_DENSITY = 100.0    # Points per local-space unit along each edge
 
 # --- VISIBILITY ---
 # Discard cloud points within this many pixels of the border/helpers
-HELPER_MARGIN = 1  
+HELPER_MARGIN = 1
+
+# --- ALIGNMENT BORDER ---
+PROJECTOR_HFOV_DEG = 38   # Measured projector HFOV (border maps to this)
+CORNER_CIRCLE_RADIUS_PX = 3 # Corner circle radius in projector pixels
+CORNER_CIRCLE_DENSITY   = 1 # Sub-pixel steps per pixel for circle fill
+
+# --- CONTENT SURFACE SELECTION ---
+# Max distance (world units) from a fracture point to the content surface
+# for that pixel to be illuminated. Tune based on your glass/mesh scale.
+SURFACE_THRESHOLD = 0.005
 
 # --- OPTICS ---
 IOR_OUTSIDE   = 1.00
@@ -59,6 +92,104 @@ def write_dxf_points(filepath, points):
         print(f"SUCCESS: Exported {len(points)} points to {filepath}")
     except Exception as e:
         print(f"ERROR: Could not write DXF file: {e}")
+
+def write_config_txt(filepath, scene, cam, cube):
+    """Export full setup configuration so a renderer can reconstruct the scene."""
+    def mat4_rows(m):
+        return [[m[row][col] for col in range(4)] for row in range(4)]
+    def vec3(v):
+        return [v.x, v.y, v.z]
+
+    cam_origin, tl, tr, bl, br = get_camera_vectors(scene, cam)
+    cam_hfov = get_camera_hfov(scene, cam)
+    cam_vfov = get_camera_vfov(scene, cam)
+
+    # Glass local bounding box
+    local_bbox = [Vector(b) for b in cube.bound_box]
+    bbox_min = [min(v[i] for v in local_bbox) for i in range(3)]
+    bbox_max = [max(v[i] for v in local_bbox) for i in range(3)]
+
+    # Glass world-space dimensions
+    scale = cube.matrix_world.to_scale()
+    world_size = [(bbox_max[i] - bbox_min[i]) * abs(scale[i]) for i in range(3)]
+
+    config = {
+        "generator": "volemetric_display_gen.py",
+
+        # --- Projector / Camera ---
+        "projector": {
+            "resolution": [RES_X, RES_Y],
+            "pixel_step": PIXEL_STEP,
+            "projector_hfov_deg": PROJECTOR_HFOV_DEG,
+            "camera_hfov_deg": round(cam_hfov, 6),
+            "camera_vfov_deg": round(cam_vfov, 6),
+            "camera_focal_length_mm": cam.data.lens,
+            "camera_sensor_width_mm": cam.data.sensor_width,
+            "camera_sensor_height_mm": cam.data.sensor_height,
+            "camera_sensor_fit": cam.data.sensor_fit,
+            "camera_position": vec3(cam_origin),
+            "camera_matrix_world": mat4_rows(cam.matrix_world),
+            "frustum_corners_world": {
+                "top_left": vec3(tl),
+                "top_right": vec3(tr),
+                "bottom_left": vec3(bl),
+                "bottom_right": vec3(br),
+            },
+        },
+
+        # --- Glass Block ---
+        "glass": {
+            "object_name": CUBE_NAME,
+            "matrix_world": mat4_rows(cube.matrix_world),
+            "local_bbox_min": bbox_min,
+            "local_bbox_max": bbox_max,
+            "world_dimensions": world_size,
+            "inner_cube_scale": INNER_CUBE_SCALE,
+        },
+
+        # --- Optics ---
+        "optics": {
+            "ior_outside": IOR_OUTSIDE,
+            "ior_inside": IOR_INSIDE,
+        },
+
+        # --- Point Generation ---
+        "point_generation": {
+            "points_per_ray": POINTS_PER_RAY,
+            "point_radius": POINT_RADIUS,
+            "helper_margin_px": HELPER_MARGIN,
+            "surface_threshold": SURFACE_THRESHOLD,
+            "fit_mode": FIT_MODE,
+            "rotate_90": ROTATE_90,
+            "flip_x": FLIP_X,
+            "flip_y": FLIP_Y,
+        },
+
+        # --- Alignment Border ---
+        "alignment_border": {
+            "border_base_depth": 0.5,
+            "depth_interleave_n": 5,
+            "depth_offset_amount": 0.15,
+            "border_pixel_step": 1,
+        },
+
+        # --- Content (if present) ---
+        "content": {
+            "object_name": CONTENT_NAME if CONTENT_NAME else None,
+        },
+    }
+
+    # If content object exists, add its transform
+    content = bpy.data.objects.get(CONTENT_NAME) if CONTENT_NAME else None
+    if content:
+        config["content"]["matrix_world"] = mat4_rows(content.matrix_world)
+
+    try:
+        with open(filepath, 'w') as f:
+            json.dump(config, f, indent=2)
+        print(f"SUCCESS: Exported config to {filepath}")
+    except Exception as e:
+        print(f"ERROR: Could not write config file: {e}")
 
 # -------------------------------------------------------------------
 # GEOMETRY HELPERS
@@ -91,6 +222,57 @@ def refract(I, N, n1, n2):
     if k < 0.0: return None
     cost = math.sqrt(k)
     return (eta * I + (eta * cosi - cost) * N).normalized()
+
+# -------------------------------------------------------------------
+# FOV-TO-PIXEL MAPPING
+# -------------------------------------------------------------------
+def get_camera_hfov(scene, camera):
+    render = scene.render
+    sensor_fit = camera.data.sensor_fit
+    focal_length = camera.data.lens
+    aspect_x = render.resolution_x * render.pixel_aspect_x
+    aspect_y = render.resolution_y * render.pixel_aspect_y
+    if sensor_fit == 'HORIZONTAL' or (sensor_fit == 'AUTO' and aspect_x >= aspect_y):
+        sensor_width = camera.data.sensor_width
+    else:
+        sensor_width = camera.data.sensor_height * (aspect_x / aspect_y)
+    return math.degrees(2.0 * math.atan(sensor_width / (2.0 * focal_length)))
+
+def get_camera_vfov(scene, camera):
+    render = scene.render
+    sensor_fit = camera.data.sensor_fit
+    focal_length = camera.data.lens
+    aspect_x = render.resolution_x * render.pixel_aspect_x
+    aspect_y = render.resolution_y * render.pixel_aspect_y
+    if sensor_fit == 'VERTICAL' or (sensor_fit == 'AUTO' and aspect_y > aspect_x):
+        sensor_height = camera.data.sensor_height
+    else:
+        sensor_height = camera.data.sensor_width * (aspect_y / aspect_x)
+    return math.degrees(2.0 * math.atan(sensor_height / (2.0 * focal_length)))
+
+def get_projector_pixel_bounds(cam_hfov, cam_vfov):
+    """Map projector FOV edges into camera pixel coordinates (RES_X x RES_Y grid).
+
+    Returns (px_left, px_right, py_top, py_bottom) as floats in the
+    camera pixel grid.  When the camera FOV equals PROJECTOR_HFOV_DEG
+    these collapse to (0, RES_X, 0, RES_Y).
+    """
+    proj_vfov = 2.0 * math.degrees(math.atan(
+        math.tan(math.radians(PROJECTOR_HFOV_DEG / 2.0)) * RES_Y / RES_X))
+
+    # Horizontal
+    half_proj_h = math.tan(math.radians(PROJECTOR_HFOV_DEG / 2.0))
+    half_cam_h  = math.tan(math.radians(cam_hfov / 2.0))
+    px_right = (RES_X / 2.0) + (half_proj_h / half_cam_h) * (RES_X / 2.0)
+    px_left  = RES_X - px_right
+
+    # Vertical
+    half_proj_v = math.tan(math.radians(proj_vfov / 2.0))
+    half_cam_v  = math.tan(math.radians(cam_vfov / 2.0))
+    py_bottom = (RES_Y / 2.0) + (half_proj_v / half_cam_v) * (RES_Y / 2.0)
+    py_top    = RES_Y - py_bottom
+
+    return px_left, px_right, py_top, py_bottom
 
 # -------------------------------------------------------------------
 # BLENDER SETUP
@@ -198,7 +380,7 @@ def generate_laser_cloud():
     box_min_inner = Vector((-s_in, -s_in, -s_in))
     box_max_inner = Vector(( s_in,  s_in,  s_in))
 
-    # 2. Full Box (Unscaled / Scale 1.0) -- No longer used for helpers
+    # 2. Full Box (Unscaled / Scale 1.0) -- Used for alignment border
     s_full = 1.0
     box_min_full = Vector((-s_full, -s_full, -s_full))
     box_max_full = Vector(( s_full,  s_full,  s_full))
@@ -267,70 +449,436 @@ def generate_laser_cloud():
                  return (ray_origin_local_2, ray_dir_local_2, max(0.0, t_enter), t_exit)
         return None
 
+    # --- PROJECTOR-TO-CAMERA PIXEL MAPPING ---
+    # All features (cloud + border) use projector pixel space mapped
+    # through the 37.6 deg FOV so everything is in the same coordinate space.
+    cam_hfov = get_camera_hfov(scene, cam)
+    cam_vfov = get_camera_vfov(scene, cam)
+    px_left, px_right, py_top, py_bottom = get_projector_pixel_bounds(cam_hfov, cam_vfov)
+
+    print(f"  Projector HFOV: {PROJECTOR_HFOV_DEG:.1f} deg")
+    print(f"  Projector edges in cam pixels: X=[{px_left:.1f}, {px_right:.1f}] "
+          f"Y=[{py_top:.1f}, {py_bottom:.1f}]")
+
+    def proj_to_cam(proj_px, proj_py):
+        """Convert projector pixel to camera pixel coordinate."""
+        cam_x = px_left + (px_right - px_left) * proj_px / (RES_X - 1)
+        cam_y = py_top + (py_bottom - py_top) * proj_py / (RES_Y - 1)
+        return cam_x, cam_y
+
     # ----------------------------------------------
     # 1. GENERATE MAIN CLOUD (Using Inner Scaled Box)
     # ----------------------------------------------
+    # Also record which pixel produced each fracture point so we can
+    # later decide which pixels to illuminate based on content proximity.
     print(f"Generating Cloud ({RES_X}x{RES_Y})...")
+    if RANDOM_SEED is not None:
+        random.seed(RANDOM_SEED)
     fracture_coords = []
-    
+    pixel_to_points = {}   # (x, y) -> list of world-space Vector points
+
     for x in range(0, RES_X, PIXEL_STEP):
         for y in range(0, RES_Y, PIXEL_STEP):
-            
+
             # --- MARGIN CHECK ---
             # If (x, y) is within HELPER_MARGIN of the border, skip it
-            if (x <= HELPER_MARGIN or x >= (RES_X - 1) - HELPER_MARGIN or 
+            if (x <= HELPER_MARGIN or x >= (RES_X - 1) - HELPER_MARGIN or
                 y <= HELPER_MARGIN or y >= (RES_Y - 1) - HELPER_MARGIN):
                 continue
-            
-            res = get_ray_interval(x, y, box_min_inner, box_max_inner)
+
+            cam_x, cam_y = proj_to_cam(x, y)
+            res = get_ray_interval(cam_x, cam_y, box_min_inner, box_max_inner)
             if res:
                 r_orig, r_dir, t_in, t_out = res
                 ray_len = t_out - t_in
                 step_size = ray_len / POINTS_PER_RAY
-                
+                pts = []
+
                 for i in range(POINTS_PER_RAY):
                     base_t = t_in + (step_size * i)
                     t_val = base_t + (random.uniform(0.0, 1.0) * step_size)
                     p_local = r_orig + r_dir * t_val
-                    fracture_coords.append(cube_mat @ p_local)
+                    p_world = cube_mat @ p_local
+                    fracture_coords.append(p_world)
+                    pts.append(p_world)
+
+                pixel_to_points[(x, y)] = pts
 
     create_obj_from_points(PCLOUD_NAME, fracture_coords, color=(1.0, 1.0, 1.0, 1.0))
-    
+
     # ----------------------------------------------
-    # 2. GENERATE ALIGNMENT HELPERS (Using Inner Box)
+    # 2. GENERATE ALIGNMENT BORDER (Projector FOV edges with interweaved depth)
     # ----------------------------------------------
-    print("Generating Alignment Helpers...")
+    # Border maps to the projector's actual edge pixels at PROJECTOR_HFOV_DEG,
+    # not the Blender camera edges. Every DEPTH_INTERLEAVE_N points alternate
+    # between +/- depth offset for parallax verification.
+    BORDER_BASE_DEPTH   = 0.5    # Mid-depth through the glass
+    DEPTH_INTERLEAVE_N  = 20     # Every N points, apply a depth offset
+    DEPTH_OFFSET_AMOUNT = 0.45   # Depth offset (fraction of ray segment)
+    BORDER_PIXEL_STEP   = 1      # Trace every Nth projector pixel
+
+    print("Generating Alignment Border...")
     helper_coords = []
 
-    borders = [
-        ("BOTTOM", 0, RES_X, 1, 0, 1, 1),            
-        ("TOP",    0, RES_X, 1, RES_Y-1, RES_Y, 1),  
-        ("LEFT",   0, 1, 1,     0, RES_Y, 1),        
-        ("RIGHT",  RES_X-1, RES_X, 1, 0, RES_Y, 1)   
+    def trace_border_point(cam_x, cam_y, depth_factor):
+        """Trace a single border point at the given camera pixel and depth."""
+        res = get_ray_interval(cam_x, cam_y, box_min_full, box_max_full)
+        if not res:
+            return None
+        r_orig, r_dir, t_in, t_out = res
+        t_val = t_in + (t_out - t_in) * depth_factor
+        p_local = r_orig + r_dir * t_val
+        return cube_mat @ p_local
+
+    # Border edges in projector pixel space
+    proj_x_min = 0
+    proj_x_max = RES_X - 1
+    proj_y_min = 0
+    proj_y_max = RES_Y - 1
+
+    border_edges = [
+        ("TOP",    [(ppx, proj_y_min) for ppx in range(proj_x_min, proj_x_max + 1, BORDER_PIXEL_STEP)]),
+        ("BOTTOM", [(ppx, proj_y_max) for ppx in range(proj_x_min, proj_x_max + 1, BORDER_PIXEL_STEP)]),
+        ("LEFT",   [(proj_x_min, ppy) for ppy in range(proj_y_min, proj_y_max + 1, BORDER_PIXEL_STEP)]),
+        ("RIGHT",  [(proj_x_max, ppy) for ppy in range(proj_y_min, proj_y_max + 1, BORDER_PIXEL_STEP)]),
     ]
 
-    for label, xs, xe, xst, ys, ye, yst in borders:
-        for x in range(xs, xe, xst):
-            for y in range(ys, ye, yst):
-                # UPDATED: Use Inner Box for helpers too
-                res = get_ray_interval(x, y, box_min_inner, box_max_inner)
-                if res:
-                    r_orig, r_dir, t_in, t_out = res
-                    
-                    factor = y / max(1, RES_Y - 1)
-                    t_target = t_in + (t_out - t_in) * factor
-                    
-                    p_local = r_orig + r_dir * t_target
-                    helper_coords.append(cube_mat @ p_local)
+    TICK_LENGTH_PX = 3   # perpendicular tick length in projector pixels
+    TICK_DENSITY   = 5   # sub-pixel steps per pixel along tick
+    TICK_EVERY_N   = 3   # place tick on every Nth back-plane segment
+
+    def trace_tick(mid_px, mid_py, label):
+        """Trace a dense perpendicular tick centered on the border at (mid_px, mid_py)."""
+        is_horiz = label in ("TOP", "BOTTOM")
+        sign = 1 if label in ("TOP", "LEFT") else -1
+        half = TICK_LENGTH_PX / 2.0
+        n_steps = TICK_LENGTH_PX * TICK_DENSITY
+        for i in range(n_steps + 1):
+            frac = -half + (TICK_LENGTH_PX * i / n_steps)
+            if is_horiz:
+                tx, ty = mid_px, mid_py + sign * frac
+            else:
+                tx, ty = mid_px + sign * frac, mid_py
+            tcx, tcy = proj_to_cam(tx, ty)
+            tpt = trace_border_point(tcx, tcy, BORDER_BASE_DEPTH + DEPTH_OFFSET_AMOUNT)
+            if tpt:
+                helper_coords.append(tpt)
+
+    for label, pixel_list in border_edges:
+        count = 0
+        back_seg_count = 0
+        seg_points = []  # accumulate points in current segment
+        for proj_px, proj_py in pixel_list:
+            cam_x, cam_y = proj_to_cam(proj_px, proj_py)
+
+            # Interweaved depth: alternate +/- offset every N points
+            group = (count // DEPTH_INTERLEAVE_N) % 2
+            if group == 0:
+                depth = BORDER_BASE_DEPTH + DEPTH_OFFSET_AMOUNT
+            else:
+                depth = BORDER_BASE_DEPTH - DEPTH_OFFSET_AMOUNT
+
+            pt = trace_border_point(cam_x, cam_y, depth)
+            if pt:
+                helper_coords.append(pt)
+
+            # Track back-plane segment pixels for midpoint tick
+            if group == 0:
+                seg_points.append((proj_px, proj_py))
+            else:
+                if seg_points:
+                    if back_seg_count % TICK_EVERY_N == 0:
+                        mid_px, mid_py = seg_points[len(seg_points) // 2]
+                        trace_tick(mid_px, mid_py, label)
+                    back_seg_count += 1
+                    seg_points = []
+
+            count += 1
+
+        # Handle last segment if it was back-plane
+        if seg_points:
+            if back_seg_count % TICK_EVERY_N == 0:
+                mid_px, mid_py = seg_points[len(seg_points) // 2]
+                trace_tick(mid_px, mid_py, label)
+
+    # Corner circles on the front offset plane for alignment starting point
+    print("Generating Corner Circles...")
+    front_depth = BORDER_BASE_DEPTH - DEPTH_OFFSET_AMOUNT
+    corner_pixels = [
+        (proj_x_min, proj_y_min),  # top-left
+        (proj_x_max, proj_y_min),  # top-right
+        (proj_x_min, proj_y_max),  # bottom-left
+        (proj_x_max, proj_y_max),  # bottom-right
+    ]
+    r = CORNER_CIRCLE_RADIUS_PX
+    step = 1.0 / CORNER_CIRCLE_DENSITY
+    corner_count = 0
+    for cx, cy in corner_pixels:
+        sx = cx - r
+        while sx <= cx + r:
+            sy = cy - r
+            while sy <= cy + r:
+                dx, dy = sx - cx, sy - cy
+                if dx * dx + dy * dy <= r * r:
+                    tcx, tcy = proj_to_cam(sx, sy)
+                    pt = trace_border_point(tcx, tcy, front_depth)
+                    if pt:
+                        helper_coords.append(pt)
+                        corner_count += 1
+                sy += step
+            sx += step
+    print(f"  {corner_count} corner circle points (4 corners, r={r}px)")
 
     create_obj_from_points(HELPER_NAME, helper_coords, color=(1.0, 0.2, 0.0, 1.0))
 
     # ----------------------------------------------
-    # 3. EXPORT
+    # 2b. INNER CUBE EDGE MICROFRACTURES
+    # ----------------------------------------------
+    # Place fracture points along all 12 edges of the inner safe-zone cube.
+    # These are NOT illuminated by the projector — they serve as physical
+    # registration marks visible under ambient light.
+    print("Generating Inner Cube Edge fractures...")
+    edge_coords = []
+
+    corners = [
+        Vector((-s_in, -s_in, -s_in)),
+        Vector(( s_in, -s_in, -s_in)),
+        Vector(( s_in,  s_in, -s_in)),
+        Vector((-s_in,  s_in, -s_in)),
+        Vector((-s_in, -s_in,  s_in)),
+        Vector(( s_in, -s_in,  s_in)),
+        Vector(( s_in,  s_in,  s_in)),
+        Vector((-s_in,  s_in,  s_in)),
+    ]
+    edges = [
+        (0,1),(1,2),(2,3),(3,0),  # front face
+        (4,5),(5,6),(6,7),(7,4),  # back face
+        (0,4),(1,5),(2,6),(3,7),  # connecting
+    ]
+
+    for a_idx, b_idx in edges:
+        a, b = corners[a_idx], corners[b_idx]
+        a_world = cube_mat @ a
+        b_world = cube_mat @ b
+        length = (b_world - a_world).length
+        n_pts = max(1, round(length * EDGE_POINT_DENSITY))
+        for i in range(n_pts):
+            t = (i + 0.5) / n_pts
+            p_local = a.lerp(b, t)
+            edge_coords.append(cube_mat @ p_local)
+
+    print(f"  {len(edge_coords)} edge points (12 edges, {EDGE_POINT_DENSITY} pts/unit)")
+    create_obj_from_points(EDGE_NAME, edge_coords, color=(0.0, 0.6, 1.0, 1.0))
+
+    # ----------------------------------------------
+    # 3. PROJECTOR IMAGE (content-targeted illumination)
+    # ----------------------------------------------
+    # For each pixel's fracture point(s), find the nearest point on the
+    # ContentShape surface.  If the closest fracture point is within
+    # SURFACE_THRESHOLD, light that pixel.  This selects the subset of
+    # the volumetric cloud that sits on/near the target surface.
+
+    # Auto-create ContentShape if it doesn't exist
+    content = bpy.data.objects.get(CONTENT_NAME) if CONTENT_NAME else None
+    if CONTENT_NAME and not content:
+        print(f"  Creating default '{CONTENT_NAME}' (cube) inside glass block...")
+        bpy.ops.mesh.primitive_cube_add(size=1.0,
+                                         location=cube.matrix_world.translation)
+        content = bpy.context.active_object
+        content.name = CONTENT_NAME
+        content.data.name = CONTENT_NAME
+        cube_scale = cube.matrix_world.to_scale()
+        content.scale = (cube_scale.x * INNER_CUBE_SCALE * 0.5,
+                         cube_scale.y * INNER_CUBE_SCALE * 0.5,
+                         cube_scale.z * INNER_CUBE_SCALE * 0.5)
+        bpy.context.view_layer.update()
+        depsgraph = bpy.context.evaluated_depsgraph_get()
+
+    content_hit_points = []
+
+    if content:
+        print(f"\nGenerating projector image for '{CONTENT_NAME}'...")
+        print(f"  Surface threshold: {SURFACE_THRESHOLD}")
+
+        # Build BVH for content mesh
+        for poly in content.data.polygons:
+            poly.use_smooth = False
+        content.data.update()
+        content_bvh = BVHTree.FromObject(content, depsgraph)
+        content_mat = content.matrix_world
+        content_mat_inv = content_mat.inverted()
+
+        # Determine which pixels hit the content surface
+        hit_pixels = {}  # (x, y) -> best_point
+        hit_count = 0
+
+        for (x, y), pts in pixel_to_points.items():
+            best_dist = float('inf')
+            best_point = None
+
+            for p_world in pts:
+                p_local = content_mat_inv @ p_world
+                nearest = content_bvh.find_nearest(p_local)
+                if nearest[0] is None:
+                    continue
+                dist = nearest[3]
+                if dist < best_dist:
+                    best_dist = dist
+                    best_point = p_world
+
+            if best_dist > SURFACE_THRESHOLD:
+                continue
+
+            hit_count += 1
+            hit_pixels[(x, y)] = best_point
+            content_hit_points.append(best_point)
+
+        print(f"  Content hits: {hit_count} / {len(pixel_to_points)} pixels "
+              f"({100*hit_count/max(1,len(pixel_to_points)):.1f}%)")
+
+        # Upscale to projector native resolution (720p)
+        scale_x = PROJ_RES_X // RES_X  # 5
+        scale_y = PROJ_RES_Y // RES_Y  # 5
+        pixels = [0.0, 0.0, 0.0, 1.0] * (PROJ_RES_X * PROJ_RES_Y)
+
+        for (x, y) in hit_pixels:
+            flipped_y = (RES_Y - 1) - y
+            if INFLATE:
+                # Single pixel at mapped position (4px gap between neighbors)
+                out_x = x * scale_x
+                out_y = flipped_y * scale_y
+                idx = (out_y * PROJ_RES_X + out_x) * 4
+                pixels[idx]     = 1.0
+                pixels[idx + 1] = 1.0
+                pixels[idx + 2] = 1.0
+            else:
+                # Fill scale_x * scale_y block (nearest-neighbor upscale)
+                base_x = x * scale_x
+                base_y = flipped_y * scale_y
+                for dy in range(scale_y):
+                    for dx in range(scale_x):
+                        idx = ((base_y + dy) * PROJ_RES_X + (base_x + dx)) * 4
+                        pixels[idx]     = 1.0
+                        pixels[idx + 1] = 1.0
+                        pixels[idx + 2] = 1.0
+
+        mode_label = "INFLATE (1px per ray)" if INFLATE else f"FILLED ({scale_x}x{scale_y} blocks)"
+        print(f"  Output: {PROJ_RES_X}x{PROJ_RES_Y} — {mode_label}")
+
+        # Create Blender image
+        img_name = "ProjectorImage"
+        img = bpy.data.images.get(img_name)
+        if img:
+            bpy.data.images.remove(img)
+        img = bpy.data.images.new(img_name, PROJ_RES_X, PROJ_RES_Y, alpha=False)
+        img.pixels = pixels
+
+        if DO_EXPORT_IMAGE:
+            try:
+                img.filepath_raw = IMAGE_PATH
+                img.file_format = 'PNG'
+                img.save()
+                print(f"  Projector image saved: {IMAGE_PATH}")
+            except Exception as e:
+                print(f"  WARNING: Could not save image: {e}")
+                print("  (Image still available in Blender as 'ProjectorImage')")
+
+        # Add image as camera background for verification
+        cam.data.show_background_images = True
+        for bg in list(cam.data.background_images):
+            if bg.image and bg.image.name == img_name:
+                cam.data.background_images.remove(bg)
+        bg = cam.data.background_images.new()
+        bg.image = img
+        bg.alpha = 0.5
+        bg.display_depth = 'FRONT'
+
+        # Visualization: content-hit fracture points (the selected subset)
+        if content_hit_points:
+            create_obj_from_points(CONTENT_CLOUD_NAME, content_hit_points,
+                                   color=(0.0, 1.0, 0.5, 1.0))
+            print(f"  Content point cloud: '{CONTENT_CLOUD_NAME}' "
+                  f"({len(content_hit_points)} points)")
+    elif CONTENT_NAME:
+        print(f"\nWARNING: No object named '{CONTENT_NAME}' in scene — "
+              f"skipping projector image generation.")
+        print(f"  Add a mesh named '{CONTENT_NAME}' to generate the illumination image.")
+
+    # ----------------------------------------------
+    # 4. INPUT IMAGE → POINT CLOUD VISUALIZATION
+    # ----------------------------------------------
+    if INPUT_IMAGE_PATH:
+        print(f"\nLoading input image: {INPUT_IMAGE_PATH}")
+        # Load image into Blender
+        inp_img_name = "InputProjectorImage"
+        inp_img = bpy.data.images.get(inp_img_name)
+        if inp_img:
+            bpy.data.images.remove(inp_img)
+        try:
+            inp_img = bpy.data.images.load(INPUT_IMAGE_PATH)
+            inp_img.name = inp_img_name
+        except Exception as e:
+            inp_img = None
+            print(f"  ERROR: Could not load image: {e}")
+
+        if inp_img:
+            img_w, img_h = inp_img.size[0], inp_img.size[1]
+            print(f"  Image size: {img_w}x{img_h}")
+            inp_pixels = list(inp_img.pixels)  # flat RGBA
+
+            illuminated_points = []
+            lit_count = 0
+
+            for (x, y), pts in pixel_to_points.items():
+                # Map ray-grid pixel (x, y) to image pixel
+                # Support both native res (256x144) and 720p (1280x720)
+                if img_w == RES_X and img_h == RES_Y:
+                    sample_x, sample_y = x, y
+                else:
+                    sample_x = int(x * img_w / RES_X)
+                    sample_y = int(y * img_h / RES_Y)
+
+                sample_x = min(sample_x, img_w - 1)
+                sample_y = min(sample_y, img_h - 1)
+
+                # PNG origin is bottom-left; ray grid y=0 is top
+                flipped_sy = (img_h - 1) - sample_y
+                idx = (flipped_sy * img_w + sample_x) * 4
+                r, g, b = inp_pixels[idx], inp_pixels[idx + 1], inp_pixels[idx + 2]
+                brightness = 0.299 * r + 0.587 * g + 0.114 * b
+
+                if brightness >= INPUT_BRIGHTNESS_THRESHOLD:
+                    lit_count += 1
+                    illuminated_points.extend(pts)
+
+            print(f"  Lit pixels: {lit_count} / {len(pixel_to_points)} "
+                  f"({100*lit_count/max(1,len(pixel_to_points)):.1f}%)")
+            print(f"  Illuminated fracture points: {len(illuminated_points)}")
+
+            if illuminated_points:
+                create_obj_from_points(INPUT_CLOUD_NAME, illuminated_points,
+                                       color=(0.2, 0.8, 1.0, 1.0))
+                print(f"  Created '{INPUT_CLOUD_NAME}' in scene")
+
+            # Add as camera background
+            cam.data.show_background_images = True
+            for bg in list(cam.data.background_images):
+                if bg.image and bg.image.name == inp_img_name:
+                    cam.data.background_images.remove(bg)
+            bg = cam.data.background_images.new()
+            bg.image = inp_img
+            bg.alpha = 0.5
+            bg.display_depth = 'FRONT'
+
+    # ----------------------------------------------
+    # 5. EXPORT
     # ----------------------------------------------
     if DO_EXPORT:
-        total_points = helper_coords + fracture_coords
+        total_points = helper_coords + fracture_coords + edge_coords
         write_dxf_points(EXPORT_PATH, total_points)
+
+        config_path = os.path.splitext(EXPORT_PATH)[0] + "_config.txt"
+        write_config_txt(config_path, scene, cam, cube)
 
 if __name__ == "__main__":
     generate_laser_cloud()

@@ -21,7 +21,7 @@ Based on the method described in Nayar & Anand's "3D Volumetric Display using Pa
 
 - **`volemetric_display_gen.py`** — Volumetric fill ray tracer. Fills the entire inner volume of the glass with fracture points (no target mesh needed — just the glass cube). Each pixel ray gets `POINTS_PER_RAY` fracture points randomly distributed along its path through the inner safe zone. Supports aspect ratio fitting, 90-degree rotation, and axis flipping for projector alignment. Simpler pipeline — only needs Camera + Cube.
 
-- **`projector_fov_calibration.py`** — FOV calibration & alignment tool. Measures projector HFOV/VFOV via height-encoded tick rulers, generates alignment patterns (corners, crosshair, grid, border), depth probes for parallax verification, volumetric test regions across the H FOV, and cluster density tests. All non-cluster features use projector pixel coordinates for 1:1 pixel mapping. FOV ruler ticks extend past projector resolution bounds. Volumetric test regions span from bottom to top VFOV rulers, record 2D→3D mappings (exported as JSON), include inter-region alignment points and depth probes, and label each region's HFOV angle. Generates a calibration verification image and adds it to the Blender camera background.
+- **`projector_fov_calibration.py`** — FOV calibration & alignment tool. Measures projector HFOV/VFOV via height-encoded tick rulers, generates alignment patterns (corners, crosshair, grid, border), depth probes for parallax verification, volumetric test regions across the H FOV, and nucleus/electron cluster brightness tests. All non-cluster features use projector pixel coordinates for 1:1 pixel mapping. FOV ruler ticks extend past projector resolution bounds. Volumetric test regions each use a different HFOV (from VOL_TEST_FOV_MIN to VOL_TEST_FOV_MAX) so you can see which FOV produces correct alignment; they span from bottom to top VFOV rulers, record 2D→3D mappings (exported as JSON), include inter-region alignment points and depth probes, and label each region's FOV. Cluster tests use a nucleus/electron model: each test atom has a central fracture point (nucleus) surrounded by electron points on a sphere shell, testing whether more fractures per voxel increase perceived brightness. Generates a calibration verification image and adds it to the Blender camera background.
 
 - **`projector_3d_image.py`** — Projector image generator for 3D display. Given a target 3D mesh ("ContentShape") in the Blender scene, traces refracted rays from every projector pixel through the glass, checks for content intersection, and outputs a PNG where lit pixels correspond to fracture points that would illuminate the target shape. Supports Lambertian shading from an external viewer camera ("ViewerCamera"). Creates verification point clouds and camera backgrounds in Blender for alignment checking.
 
@@ -71,10 +71,9 @@ All scripts share the same core pattern: camera pixel grid → ray tracing → r
 | `FOV_Ruler` | Green | FOV measurement ticks with height encoding (extend past projector bounds) |
 | `AlignmentPattern` | Yellow | Corners, crosshair, grid, edge ticks (projector pixel coords) |
 | `AlignmentBorder` | Blue | Per-pixel border frame around projector FOV |
-| `DepthProbes` | Magenta | Off-plane verification points (projector pixel coords) |
 | `VolTestRegions` | Cyan | Volumetric display test patches with 2D→3D mapping |
 | `VolTestInterRegion` | Orange | Alignment dots and depth probes between vol test regions |
-| `ClusterTests` | White | Point clustering density tests |
+| `ClusterTests` | White | Nucleus/electron cluster brightness tests |
 
 ### projector_3d_image.py
 | Object | Color | Purpose |
