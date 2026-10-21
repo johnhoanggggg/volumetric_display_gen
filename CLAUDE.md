@@ -25,6 +25,12 @@ Based on the method described in Nayar & Anand's "3D Volumetric Display using Pa
 
 - **`projector_3d_image.py`** — Projector image generator for 3D display. Given a target 3D mesh ("ContentShape") in the Blender scene, traces refracted rays from every projector pixel through the glass, checks for content intersection, and outputs a PNG where lit pixels correspond to fracture points that would illuminate the target shape. Supports Lambertian shading from an external viewer camera ("ViewerCamera"). Creates verification point clouds and camera backgrounds in Blender for alignment checking.
 
+- **`projector_alignment_fiducials.py`** — Alignment fiducial generator for physical blocks. Designs a 5x3 grid of single-point fiducials (alternating front/back depth) at known projector pixels, 8 safe-zone corner anchors and an "F" orientation glyph. Exports `alignment_fiducials.json` (rig + design in the glass frame, mm), a calibration-only DXF and a check PNG. Projector intrinsics come from `PROJECTOR_HFOV_DEG`; the scene camera supplies only the pose. `volemetric_display_gen.py` merges the fiducials into production clouds via `FIDUCIAL_JSON_PATH`.
+
+- **`alignment_tool/`** — Browser tool (`index.html` + `alignment_core.js`, no build step). Drives the projector through a second window, finds the pixel that lights each etched fiducial, and solves the projector pose relative to the etched cloud (plus optional HFOV, principal point, IOR, cloud scale) by damped least squares with weak priors. Exports `alignment_result.json`. `alignment_core.js` also runs under Node (`node alignment_tool/test_alignment_core.js`).
+
+- **`apply_projector_alignment.py`** — Reads `alignment_result.json` and moves the scene camera to the measured pose (HFOV + lens shift too), keeping the original as `Camera_Nominal`, for use with `projector_3d_image.py`. See `ALIGNMENT.md` for the full physical alignment methodology.
+
 All scripts share the same core pattern: camera pixel grid → ray tracing → refraction at glass surface → AABB filtering → DXF/PNG export. They share the same DXF writer, refraction function, point rendering setup, and Blender object creation utilities.
 
 ## Required Blender Scene Objects
@@ -75,6 +81,13 @@ All scripts share the same core pattern: camera pixel grid → ray tracing → r
 | `VolTestInterRegion` | Orange | Alignment dots and depth probes between vol test regions |
 | `ClusterTests` | White | Nucleus/electron cluster brightness tests |
 
+### projector_alignment_fiducials.py
+| Object | Color | Purpose |
+|---|---|---|
+| `AlignFiducials` | Magenta | Single-point fiducials at known projector pixels (front/back checkerboard) |
+| `AlignAnchors` | Blue | 8 safe-zone corner points (symmetric bounding box, caliper datums) |
+| `AlignGlyph` | Yellow | "F" orientation glyph near the front top-left (projector view) |
+
 ### projector_3d_image.py
 | Object | Color | Purpose |
 |---|---|---|
@@ -112,6 +125,9 @@ ROTATE_90          — Rotate projection 90 degrees
 FLIP_X, FLIP_Y     — Mirror projection axes
 IOR_OUTSIDE        — Index of refraction outside glass (1.00)
 IOR_INSIDE         — Index of refraction inside glass (1.50)
+FIDUCIAL_JSON_PATH — Merge alignment fiducials into the cloud (keeps cloud rays off their pixels)
+ALIGNMENT_RESULT_PATH — Render ProjectorImage.png for the measured projector pose
+SYMMETRIC_BBOX     — Add 6 points so the DXF bounding box is centred on the block
 ```
 
 ## Pipeline
@@ -200,6 +216,11 @@ Camera pixel grid (256x144)
 - Both scripts use the same `generate_laser_cloud()` entry point name
 
 ## Optics Notes
+
+- Projector pixel rows count UP from the bottom (pixel k is the ray through k + 0.5), matching Blender image storage — write PNG rows directly, never flip
+- `volemetric_display_gen.py` ray-grid pixel (x, y) is lit by projector pixels around ((x + 0.5) * PROJ_RES_X / RES_X, ...)
+- Physical alignment works in a "glass frame": origin at the block centre, axes along the block edges, millimetres
+- Etching shops usually centre the DXF bounding box in the block; `SYMMETRIC_BBOX` keeps that centring exact
 
 - Refraction implements Snell's law: `eta = n1/n2`, total internal reflection when `k < 0`
 - Entry normal validation rejects grazing-angle hits (sphere_gen: dot > -0.01, volemetric: dot > -0.1)

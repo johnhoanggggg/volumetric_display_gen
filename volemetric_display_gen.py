@@ -73,6 +73,22 @@ SURFACE_THRESHOLD = 0.005
 # --- OPTICS ---
 IOR_OUTSIDE   = 1.00
 IOR_INSIDE    = 1.50
+
+# --- PHYSICAL ALIGNMENT (see ALIGNMENT.md) ---
+# The real etched cloud never sits exactly where Blender put it, and the real
+# projector never sits exactly where the camera is.  These options etch
+# fiducials into the block, then render images for the MEASURED pose.
+FIDUCIAL_JSON_PATH    = ""     # alignment_fiducials.json from projector_alignment_fiducials.py:
+                               #   etch its fiducials + glyph into this cloud and keep
+                               #   cloud rays clear of their pixels
+ALIGNMENT_RESULT_PATH = ""     # alignment_result.json from alignment_tool/index.html:
+                               #   render ProjectorImage.png by projecting each content
+                               #   point through the measured projector pose
+SPOT_RADIUS_PX        = 1      # Measured-pose image: light (2r+1)^2 px per point
+SYMMETRIC_BBOX        = True   # Add 6 points so the DXF bounding box is centred on the
+                               #   block (etching shops usually centre the bounding box)
+MIN_SURFACE_MM        = 2.0    # Warn about points closer than this to a glass face
+BLOCK_UNIT_SCALE      = 0.001  # mm -> Blender units (0.001 = scene in metres)
 RAY_MAX_DIST  = 100000.0
 
 # -------------------------------------------------------------------
@@ -224,6 +240,87 @@ def refract(I, N, n1, n2):
     return (eta * I + (eta * cosi - cost) * N).normalized()
 
 # -------------------------------------------------------------------
+# PHYSICAL ALIGNMENT HELPERS (same maths as alignment_tool/alignment_core.js)
+# -------------------------------------------------------------------
+def get_glass_frame(cube):
+    """Returns (G, half_mm): G maps glass-frame Blender units -> world.
+    Glass frame = block centre, block axes; fiducial files use it in mm."""
+    mw = cube.matrix_world
+    _, rot, scl = mw.decompose()
+    bb = [Vector(c) for c in cube.bound_box]
+    bb_min = Vector((min(v[i] for v in bb) for i in range(3)))
+    bb_max = Vector((max(v[i] for v in bb) for i in range(3)))
+    center_world = mw @ ((bb_min + bb_max) * 0.5)
+    half_units = [(bb_max[i] - bb_min[i]) * 0.5 * abs(scl[i]) for i in range(3)]
+    G = Matrix.Translation(center_world) @ rot.to_matrix().to_4x4()
+    return G, Vector([h / BLOCK_UNIT_SCALE for h in half_units])
+
+def check_design_matches_scene(rig, cam, G):
+    """Warn if a fiducial design was made for a different camera / FOV."""
+    cam_loc, cam_rot, _ = cam.matrix_world.decompose()
+    pos = (G.inverted() @ cam_loc) / BLOCK_UNIT_SCALE
+    R = G.to_3x3().inverted() @ cam_rot.to_matrix()
+    d_pos = (pos - Vector(rig["projector"]["position"])).length
+    d_rot = max(abs(R[i][j] - rig["projector"]["rotation"][i][j])
+                for i in range(3) for j in range(3))
+    ok = d_pos < 0.01 and d_rot < 1e-4 and abs(rig["hfov_deg"] - PROJECTOR_HFOV_DEG) < 1e-6
+    if not ok:
+        print(f"  WARNING: fiducial design was made for a different camera pose / HFOV "
+              f"(moved {d_pos:.3f} mm, HFOV {rig['hfov_deg']} vs {PROJECTOR_HFOV_DEG}). "
+              f"Re-run projector_alignment_fiducials.py with this scene.")
+    return ok
+
+def solved_projector(result):
+    """Projector model from alignment_result.json (glass frame, mm)."""
+    rig, sv = result["design"]["rig"], result["solved"]
+    W = rig["res"][0]
+    return {
+        "C": Vector(sv["position_mm"]),
+        "R": Matrix(sv["rotation"]),
+        "f": (W / 2.0) / math.tan(math.radians(sv["hfov_deg"]) / 2.0),
+        "cx": sv["cx"], "cy": sv["cy"], "ior": sv["ior"],
+        "scale": sv.get("cloud_scale", 1.0),
+        "dscale": sv.get("cloud_depth_scale", 1.0),
+        "half": rig["glass"]["half_mm"],
+        "axis": rig["glass"]["front_axis"],
+        "sign": rig["glass"]["front_sign"],
+    }
+
+def point_to_pixel(proj, P):
+    """Glass-frame point (mm) -> continuous projector pixel (rows from the
+    bottom) that lights it, or None.  Solves Snell's law at the flat front
+    face (bisection in the plane of incidence), then projects the entry
+    point.  Port of pointToPixel() in alignment_tool/alignment_core.js."""
+    a, sgn, C = proj["axis"], proj["sign"], proj["C"]
+    Q = Vector(P) * proj["scale"]
+    Q[a] *= proj["dscale"]
+    h = sgn * proj["half"][a]
+    hc = sgn * (C[a] - h)
+    hp = sgn * (h - Q[a])
+    if hc <= 0 or hp < 0:
+        return None
+    b, c = [i for i in range(3) if i != a]
+    Db, Dc = Q[b] - C[b], Q[c] - C[c]
+    D = math.hypot(Db, Dc)
+    n = proj["ior"]
+    x = D
+    if D > 1e-12 and hp > 0:
+        lo, hi = 0.0, D
+        for _ in range(60):
+            x = 0.5 * (lo + hi)
+            g = x / math.hypot(x, hc) - n * (D - x) / math.hypot(D - x, hp)
+            if g > 0: hi = x
+            else: lo = x
+    E = Vector((0.0, 0.0, 0.0))
+    E[a] = h
+    E[b] = C[b] + (Db / D * x if D > 1e-12 else 0.0)
+    E[c] = C[c] + (Dc / D * x if D > 1e-12 else 0.0)
+    q = proj["R"].transposed() @ (E - C)
+    if q.z >= 0:
+        return None
+    return proj["cx"] + proj["f"] * q.x / -q.z, proj["cy"] + proj["f"] * q.y / -q.z
+
+# -------------------------------------------------------------------
 # FOV-TO-PIXEL MAPPING
 # -------------------------------------------------------------------
 def get_camera_hfov(scene, camera):
@@ -354,6 +451,40 @@ def create_obj_from_points(name, points, color=(1.0, 1.0, 1.0, 1.0)):
     setup_point_rendering(obj, radius=POINT_RADIUS*1.5, color=color)
     return obj
 
+def check_physical_placement(points, G, half_mm):
+    """Reports where an etching shop will put this cloud and returns the
+    extra points needed to centre its bounding box on the block.
+
+    Shops typically centre the model's bounding box in the glass, so an
+    asymmetric cloud is etched off-centre by half the asymmetry.  Six
+    points at the mirrored extremes (on the axes, as far from the faces as
+    the existing extremes) make the bounding box symmetric."""
+    G_inv = G.inverted()
+    local = [(G_inv @ p) / BLOCK_UNIT_SCALE for p in points]
+    lo = [min(v[i] for v in local) for i in range(3)]
+    hi = [max(v[i] for v in local) for i in range(3)]
+    centre = [(lo[i] + hi[i]) / 2 for i in range(3)]
+    print(f"  DXF bounding box centre vs block centre: "
+          f"({centre[0]:+.2f}, {centre[1]:+.2f}, {centre[2]:+.2f}) mm")
+    gap = min(half_mm[i] - max(abs(lo[i]), abs(hi[i])) for i in range(3))
+    close = sum(1 for v in local if min(half_mm[i] - abs(v[i]) for i in range(3)) < MIN_SURFACE_MM)
+    if close:
+        print(f"  WARNING: {close} points are within {MIN_SURFACE_MM} mm of a glass face "
+              f"(closest {gap:.2f} mm). Shops may refuse, clip or shrink the model to fit; "
+              f"keep everything inside the safe zone.")
+    if not SYMMETRIC_BBOX or max(abs(c) for c in centre) < 0.005:
+        return []
+    ext = [max(abs(lo[i]), abs(hi[i])) for i in range(3)]
+    extra = []
+    for i in range(3):
+        for sgn in (-1, 1):
+            v = Vector((0.0, 0.0, 0.0))
+            v[i] = sgn * ext[i]
+            extra.append(G @ (v * BLOCK_UNIT_SCALE))
+    print(f"  Added 6 bounding-box points: a shop that centres the model would "
+          f"otherwise etch it ({-centre[0]:+.2f}, {-centre[1]:+.2f}, {-centre[2]:+.2f}) mm off")
+    return extra
+
 # -------------------------------------------------------------------
 # MAIN LOGIC
 # -------------------------------------------------------------------
@@ -462,9 +593,44 @@ def generate_laser_cloud():
 
     def proj_to_cam(proj_px, proj_py):
         """Convert projector pixel to camera pixel coordinate."""
-        cam_x = px_left + (px_right - px_left) * proj_px / (RES_X - 1)
-        cam_y = py_top + (py_bottom - py_top) * proj_py / (RES_Y - 1)
+        # Pixel k is centred at (k + 0.5) / RES of the projector span; the
+        # tracer adds the 0.5 back.  (Spreading over RES - 1 drifted rays up
+        # to half a pixel from the image pixel that is meant to light them.)
+        cam_x = px_left + (px_right - px_left) * (proj_px + 0.5) / RES_X - 0.5
+        cam_y = py_top + (py_bottom - py_top) * (proj_py + 0.5) / RES_Y - 0.5
         return cam_x, cam_y
+
+    # --- FIDUCIALS (optional) ---
+    # Ray-grid pixel (x, y) is lit by projector pixels around
+    # ((x + 0.5) * PROJ_RES_X / RES_X, ...), so cloud rays near a fiducial's
+    # pixel are dropped: only the fiducial lights up while measuring it.
+    G, half_mm = get_glass_frame(cube)
+    fiducial_design = None
+    fiducial_coords = []
+    if FIDUCIAL_JSON_PATH:
+        with open(FIDUCIAL_JSON_PATH) as fh:
+            fiducial_design = json.load(fh)
+        check_design_matches_scene(fiducial_design["rig"], cam, G)
+        if FIT_MODE != 'FIT' or ROTATE_90 or FLIP_X or FLIP_Y or \
+                abs(render_aspect - PROJ_RES_X / PROJ_RES_Y) > 1e-6:
+            print("  WARNING: fiducial keep-out assumes FIT, no rotate/flip and a "
+                  f"{PROJ_RES_X}x{PROJ_RES_Y} render aspect.")
+        to_world = lambda p: G @ (Vector(p) * BLOCK_UNIT_SCALE)
+        fiducial_coords = [to_world(f["point_mm"]) for f in fiducial_design["fiducials"]]
+        fiducial_coords += [to_world(p) for p in fiducial_design.get("glyph_mm", [])]
+        keep_out = fiducial_design.get("keep_out_px", 20)
+        fid_pixels = [(f["pixel"][0] + 0.5, f["pixel"][1] + 0.5)
+                      for f in fiducial_design["fiducials"]]
+        print(f"  Fiducials: {len(fid_pixels)} (+{len(fiducial_coords) - len(fid_pixels)} glyph points), "
+              f"keep-out +/-{keep_out} projector px")
+
+    def near_fiducial(x, y):
+        if not fiducial_design:
+            return False
+        pu = (x + 0.5) * PROJ_RES_X / RES_X
+        pv = (y + 0.5) * PROJ_RES_Y / RES_Y
+        return any(abs(pu - fu) <= keep_out and abs(pv - fv) <= keep_out
+                   for fu, fv in fid_pixels)
 
     # ----------------------------------------------
     # 1. GENERATE MAIN CLOUD (Using Inner Scaled Box)
@@ -484,6 +650,8 @@ def generate_laser_cloud():
             # If (x, y) is within HELPER_MARGIN of the border, skip it
             if (x <= HELPER_MARGIN or x >= (RES_X - 1) - HELPER_MARGIN or
                 y <= HELPER_MARGIN or y >= (RES_Y - 1) - HELPER_MARGIN):
+                continue
+            if near_fiducial(x, y):
                 continue
 
             cam_x, cam_y = proj_to_cam(x, y)
@@ -741,12 +909,38 @@ def generate_laser_cloud():
         scale_y = PROJ_RES_Y // RES_Y  # 5
         pixels = [0.0, 0.0, 0.0, 1.0] * (PROJ_RES_X * PROJ_RES_Y)
 
-        for (x, y) in hit_pixels:
-            flipped_y = (RES_Y - 1) - y
+        if ALIGNMENT_RESULT_PATH:
+            # Light the pixel that the MEASURED projector pose maps onto each
+            # selected (etched) point, instead of the pixel it was designed for.
+            with open(ALIGNMENT_RESULT_PATH) as fh:
+                result = json.load(fh)
+            check_design_matches_scene(result["design"]["rig"], cam, G)
+            proj = solved_projector(result)
+            G_inv = G.inverted()
+            r = SPOT_RADIUS_PX
+            missed = 0
+            for p_world in hit_pixels.values():
+                uv = point_to_pixel(proj, (G_inv @ p_world) / BLOCK_UNIT_SCALE)
+                if not uv:
+                    missed += 1
+                    continue
+                pu, pv = int(math.floor(uv[0])), int(math.floor(uv[1]))
+                for dy in range(-r, r + 1):
+                    for dx in range(-r, r + 1):
+                        X, Y = pu + dx, pv + dy
+                        if 0 <= X < PROJ_RES_X and 0 <= Y < PROJ_RES_Y:
+                            idx = (Y * PROJ_RES_X + X) * 4
+                            pixels[idx:idx + 3] = [1.0, 1.0, 1.0]
+            if missed:
+                print(f"  WARNING: {missed} points not reachable through the front face")
+
+        for (x, y) in ([] if ALIGNMENT_RESULT_PATH else hit_pixels):
+            # Blender image rows start at the bottom, like ray-grid rows (no flip)
+            row = y
             if INFLATE:
-                # Single pixel at mapped position (4px gap between neighbors)
-                out_x = x * scale_x
-                out_y = flipped_y * scale_y
+                # Single pixel at the ray's centre pixel (4px gap between neighbors)
+                out_x = x * scale_x + scale_x // 2
+                out_y = row * scale_y + scale_y // 2
                 idx = (out_y * PROJ_RES_X + out_x) * 4
                 pixels[idx]     = 1.0
                 pixels[idx + 1] = 1.0
@@ -754,7 +948,7 @@ def generate_laser_cloud():
             else:
                 # Fill scale_x * scale_y block (nearest-neighbor upscale)
                 base_x = x * scale_x
-                base_y = flipped_y * scale_y
+                base_y = row * scale_y
                 for dy in range(scale_y):
                     for dx in range(scale_x):
                         idx = ((base_y + dy) * PROJ_RES_X + (base_x + dx)) * 4
@@ -763,6 +957,9 @@ def generate_laser_cloud():
                         pixels[idx + 2] = 1.0
 
         mode_label = "INFLATE (1px per ray)" if INFLATE else f"FILLED ({scale_x}x{scale_y} blocks)"
+        if ALIGNMENT_RESULT_PATH:
+            mode_label = (f"MEASURED POSE ({2*SPOT_RADIUS_PX+1}x{2*SPOT_RADIUS_PX+1} px per point, "
+                          f"fit RMS {result['rms_px']:.2f} px)")
         print(f"  Output: {PROJ_RES_X}x{PROJ_RES_Y} — {mode_label}")
 
         # Create Blender image
@@ -835,15 +1032,14 @@ def generate_laser_cloud():
                 if img_w == RES_X and img_h == RES_Y:
                     sample_x, sample_y = x, y
                 else:
-                    sample_x = int(x * img_w / RES_X)
-                    sample_y = int(y * img_h / RES_Y)
+                    sample_x = int((x + 0.5) * img_w / RES_X)
+                    sample_y = int((y + 0.5) * img_h / RES_Y)
 
                 sample_x = min(sample_x, img_w - 1)
                 sample_y = min(sample_y, img_h - 1)
 
-                # PNG origin is bottom-left; ray grid y=0 is top
-                flipped_sy = (img_h - 1) - sample_y
-                idx = (flipped_sy * img_w + sample_x) * 4
+                # Blender image rows start at the bottom, like ray-grid rows
+                idx = (sample_y * img_w + sample_x) * 4
                 r, g, b = inp_pixels[idx], inp_pixels[idx + 1], inp_pixels[idx + 2]
                 brightness = 0.299 * r + 0.587 * g + 0.114 * b
 
@@ -874,7 +1070,10 @@ def generate_laser_cloud():
     # 5. EXPORT
     # ----------------------------------------------
     if DO_EXPORT:
-        total_points = helper_coords + fracture_coords + edge_coords
+        total_points = helper_coords + fracture_coords + edge_coords + fiducial_coords
+        if fiducial_coords:
+            create_obj_from_points("AlignFiducials", fiducial_coords, color=(1.0, 0.0, 0.8, 1.0))
+        total_points += check_physical_placement(total_points, G, half_mm)
         write_dxf_points(EXPORT_PATH, total_points)
 
         config_path = os.path.splitext(EXPORT_PATH)[0] + "_config.txt"

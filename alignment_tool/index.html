@@ -1,0 +1,479 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Projector Alignment</title>
+<style>
+  :root {
+    --bg: #0d0f12; --panel: #161a1f; --line: #262c34; --text: #d6dbe1;
+    --muted: #8a949f; --accent: #3ddc84; --warn: #ffb347; --bad: #ff6b6b; --cur: #4fc3f7;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  body.projector { background: #000; overflow: hidden; cursor: none; }
+  body.projector canvas { display: block; }
+  #projWarn { position: fixed; left: 8px; bottom: 8px; color: #f55; font: 12px monospace; }
+  main { max-width: 1200px; margin: 0 auto; padding: 16px; }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  h2 { font-size: 14px; margin: 0 0 8px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+  .row { display: flex; gap: 16px; flex-wrap: wrap; }
+  .col { flex: 1 1 340px; min-width: 0; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px; margin-bottom: 16px; }
+  button, label.btn { background: #222a33; color: var(--text); border: 1px solid #344050; border-radius: 6px;
+    padding: 6px 12px; font: inherit; cursor: pointer; display: inline-block; }
+  button:hover, label.btn:hover { border-color: var(--accent); }
+  button:disabled { opacity: .4; cursor: default; }
+  .muted { color: var(--muted); }
+  .ok { color: var(--accent); } .warn { color: var(--warn); } .bad { color: var(--bad); }
+  table { width: 100%; border-collapse: collapse; font: 12px/1.4 ui-monospace, Menlo, Consolas, monospace; }
+  th, td { text-align: right; padding: 3px 6px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  th:first-child, td:first-child, th:nth-child(2), td:nth-child(2) { text-align: left; }
+  tr.current { background: #1d2a36; }
+  tr { cursor: pointer; }
+  #drop { border: 1px dashed #3a4554; border-radius: 8px; padding: 18px; text-align: center; }
+  #drop.over { border-color: var(--accent); }
+  .kv { display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; font: 13px ui-monospace, Menlo, Consolas, monospace; }
+  .keys { display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; font-size: 13px; }
+  kbd { background: #222a33; border: 1px solid #344050; border-radius: 4px; padding: 0 5px; font: 12px ui-monospace, monospace; }
+  pre { white-space: pre-wrap; margin: 0; font: 13px/1.5 ui-monospace, Menlo, Consolas, monospace; }
+  #preview { width: 100%; background: #000; border: 1px solid var(--line); border-radius: 4px; image-rendering: pixelated; }
+  .params label { display: inline-block; margin: 2px 12px 2px 0; font-size: 13px; }
+  .table-wrap { overflow-x: auto; }
+</style>
+</head>
+<body>
+<script src="alignment_core.js"></script>
+<script>
+'use strict';
+const VIEW = new URLSearchParams(location.search).get('view') === 'projector' ? 'projector' : 'control';
+
+// =================================================================
+// PROJECTOR WINDOW — draws whatever pattern the control window sends.
+// Nothing else is shown, so no stray UI lights fracture points.
+// =================================================================
+if (VIEW === 'projector') {
+  document.body.className = 'projector';
+  document.title = 'Projector Output';
+  const canvas = document.createElement('canvas');
+  const warn = document.createElement('div');
+  warn.id = 'projWarn';
+  document.body.append(canvas, warn);
+  const ctx = canvas.getContext('2d');
+  let pattern = null, warnTimer = null;
+
+  const draw = () => {
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = Math.round(innerWidth * dpr);
+    canvas.height = Math.round(innerHeight * dpr);
+    canvas.style.width = innerWidth + 'px';
+    canvas.style.height = innerHeight + 'px';
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    if (!pattern) return;
+    const [W, H] = pattern.res;
+    const sx = canvas.width / W, sy = canvas.height / H;
+    ctx.fillStyle = pattern.color;
+    for (const [u0, v0, w, h] of pattern.rects) {
+      const yTop = H - (v0 + h);   // model rows count up from the bottom
+      ctx.fillRect(Math.round(u0 * sx), Math.round(yTop * sy),
+        Math.max(1, Math.round(w * sx)), Math.max(1, Math.round(h * sy)));
+    }
+  };
+
+  const reportSize = () => {
+    const dpr = window.devicePixelRatio || 1;
+    const w = Math.round(innerWidth * dpr), h = Math.round(innerHeight * dpr);
+    if (window.opener) window.opener.postMessage({ type: 'size', w, h, dpr, fullscreen: !!document.fullscreenElement }, '*');
+    const want = pattern ? pattern.res : [1280, 720];
+    clearTimeout(warnTimer);
+    warn.textContent = (w === want[0] && h === want[1]) ? '' :
+      `window is ${w}x${h} device px, need ${want[0]}x${want[1]} — press F for fullscreen, set display scaling 100%`;
+    warnTimer = setTimeout(() => { warn.textContent = ''; }, 6000);
+  };
+
+  window.addEventListener('message', (e) => {
+    if (e.data && e.data.type === 'pattern') { pattern = e.data.pattern; draw(); }
+  });
+  window.addEventListener('resize', () => { draw(); reportSize(); });
+  document.addEventListener('fullscreenchange', () => { draw(); reportSize(); });
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'f' || e.key === 'F') {
+      if (document.fullscreenElement) document.exitFullscreen(); else document.documentElement.requestFullscreen();
+      e.preventDefault();
+      return;
+    }
+    if (window.opener) {
+      window.opener.postMessage({ type: 'key', key: e.key, shift: e.shiftKey }, '*');
+      e.preventDefault();
+    }
+  });
+  canvas.addEventListener('dblclick', () => document.documentElement.requestFullscreen());
+  draw(); reportSize();
+  if (window.opener) window.opener.postMessage({ type: 'hello' }, '*');
+}
+</script>
+
+<main id="app" hidden>
+  <h1>Projector ↔ Glass Alignment</h1>
+  <p class="muted" style="margin-top:0">Find which projector pixel lights each etched fiducial. After 3 or more readings the tool solves where the projector really is relative to the cloud. See ALIGNMENT.md.</p>
+
+  <div class="panel" id="loadPanel">
+    <div id="drop">
+      Drop <b>alignment_fiducials.json</b> (from projector_alignment_fiducials.py), or an exported result to resume.<br><br>
+      <label class="btn">Choose file<input type="file" id="fileIn" accept=".json" hidden></label>
+    </div>
+  </div>
+
+  <div id="work" hidden>
+    <div class="panel">
+      <button id="openProj">Open projector window</button>
+      <button id="exportBtn" disabled>Export result</button>
+      <button id="resetBtn">Clear readings</button>
+      <span id="projStatus" class="muted" style="margin-left:8px">Projector window not open</span>
+    </div>
+
+    <div class="row">
+      <div class="col">
+        <div class="panel">
+          <h2>Current fiducial</h2>
+          <div class="kv" id="curInfo"></div>
+        </div>
+        <div class="panel">
+          <h2>Pattern preview</h2>
+          <canvas id="preview" width="640" height="360"></canvas>
+          <div class="muted" style="font-size:12px;margin-top:4px">grey + design · blue ○ predicted · green ● measured · cursor in pattern colour</div>
+        </div>
+        <div class="panel">
+          <h2>Keys (work in either window)</h2>
+          <div class="keys">
+            <kbd>← → ↑ ↓</kbd><span>move 1 px (<kbd>Shift</kbd> = 10 px)</span>
+            <kbd>Space</kbd><span>pattern: vertical line → horizontal line → dot</span>
+            <kbd>Enter</kbd><span>record: this pixel lights the fiducial</span>
+            <span><kbd>N</kbd> / <kbd>P</kbd></span><span>next / previous fiducial</span>
+            <kbd>X</kbd><span>clear this fiducial's reading</span>
+            <span><kbd>[</kbd> / <kbd>]</kbd></span><span>shorter / longer line</span>
+            <span><kbd>,</kbd> / <kbd>.</kbd></span><span>thinner / wider line or dot (wide bands for coarse search)</span>
+            <kbd>A</kbd><span>verify: light every fiducial at its predicted pixel</span>
+            <kbd>B</kbd><span>blank output</span>
+            <kbd>C</kbd><span>colour (green → white → red → blue)</span>
+            <kbd>F</kbd><span>fullscreen (in the projector window)</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="col">
+        <div class="panel">
+          <h2>Fit</h2>
+          <div class="params" id="paramBoxes"></div>
+          <pre id="fitOut" class="muted" style="margin-top:8px">Record at least one fiducial.</pre>
+        </div>
+        <div class="panel">
+          <h2>Fiducials</h2>
+          <div class="table-wrap">
+            <table id="fidTable"></table>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</main>
+
+<script>
+'use strict';
+if (VIEW === 'control') {
+  const A = window.AlignmentCore;
+  const $ = (id) => document.getElementById(id);
+  $('app').hidden = false;
+
+  const MODES = ['vline', 'hline', 'dot'];
+  const MODE_NAMES = { vline: 'vertical line (finds column)', hline: 'horizontal line (finds row)', dot: 'dot (confirm)' };
+  const COLORS = ['#00ff00', '#ffffff', '#ff0000', '#0000ff'];
+  const WIDTHS = [1, 3, 5, 9, 15, 25, 41];
+
+  const S = {
+    design: null, rig: null, fids: [], readings: {},
+    current: 0, cursor: [0, 0], mode: 'vline', len: 30, width: 1, colorIdx: 0,
+    all: false, blank: false,
+    free: new Set(A.PARAMS.filter((p) => p.free).map((p) => p.key)),
+    result: null, projWin: null,
+  };
+
+  // ---------------- loading ----------------
+  const loadJson = (obj) => {
+    let design = obj, readings = {}, free = null;
+    if (obj.type === 'projector_alignment_result') {
+      design = obj.design;
+      for (const r of obj.readings) readings[r.id] = r.measured_pixel;
+      free = obj.free;
+    }
+    if (!design || design.type !== 'projector_alignment_fiducials') {
+      alert('Not a fiducial design or alignment result JSON.');
+      return;
+    }
+    S.design = design; S.rig = design.rig; S.fids = design.fiducials; S.readings = readings;
+    if (free) S.free = new Set(free);
+    $('loadPanel').hidden = true; $('work').hidden = false;
+    buildParamBoxes();
+    solveNow();
+    goTo(firstUnread() ?? 0);
+  };
+  const readFile = (file) => file.text().then((t) => loadJson(JSON.parse(t))).catch((e) => alert('Could not read JSON: ' + e));
+  $('fileIn').addEventListener('change', (e) => e.target.files[0] && readFile(e.target.files[0]));
+  const drop = $('drop');
+  drop.addEventListener('dragover', (e) => { e.preventDefault(); drop.classList.add('over'); });
+  drop.addEventListener('dragleave', () => drop.classList.remove('over'));
+  drop.addEventListener('drop', (e) => { e.preventDefault(); drop.classList.remove('over'); e.dataTransfer.files[0] && readFile(e.dataTransfer.files[0]); });
+
+  // ---------------- model ----------------
+  const model = () => (S.result ? S.result.model : A.makeModel(S.rig, {}));
+  const predicted = (f) => A.pointToPixel(model(), f.point_mm);
+  const firstUnread = () => {
+    const f = S.fids.find((x) => !S.readings[x.id]);
+    return f ? S.fids.indexOf(f) : null;
+  };
+
+  const solveNow = () => {
+    const obs = S.fids.filter((f) => S.readings[f.id]).map((f) => ({
+      point: f.point_mm, uv: [S.readings[f.id][0] + 0.5, S.readings[f.id][1] + 0.5],
+    }));
+    S.result = obs.length ? A.solve(S.rig, obs, { free: A.PARAM_KEYS.filter((k) => S.free.has(k)) }) : null;
+    $('exportBtn').disabled = !S.result;
+  };
+
+  const goTo = (i) => {
+    S.current = (i + S.fids.length) % S.fids.length;
+    const f = S.fids[S.current];
+    const p = predicted(f);
+    S.cursor = S.readings[f.id] ? S.readings[f.id].slice() : (p ? [Math.floor(p[0]), Math.floor(p[1])] : f.pixel.slice());
+    S.all = false; S.blank = false;
+    update();
+  };
+
+  const record = () => {
+    const f = S.fids[S.current];
+    S.readings[f.id] = S.cursor.slice();
+    solveNow();
+    const next = firstUnread();
+    if (next !== null) goTo(next); else update();
+  };
+
+  // ---------------- pattern ----------------
+  const buildPattern = () => {
+    const [W, H] = S.rig.res;
+    const rects = [];
+    const w = S.width, half = Math.floor(w / 2);
+    const [u, v] = S.cursor;
+    if (S.blank) {
+      // nothing
+    } else if (S.all) {
+      for (const f of S.fids) {
+        const p = predicted(f);
+        if (p) rects.push([Math.floor(p[0]) - half, Math.floor(p[1]) - half, w, w]);
+      }
+    } else if (S.mode === 'vline') {
+      rects.push([u - half, v - S.len, w, 2 * S.len + 1]);
+    } else if (S.mode === 'hline') {
+      rects.push([u - S.len, v - half, 2 * S.len + 1, w]);
+    } else {
+      rects.push([u - half, v - half, w, w]);
+    }
+    const clipped = rects.map(([x, y, rw, rh]) => {
+      const x0 = Math.max(0, x), y0 = Math.max(0, y);
+      const x1 = Math.min(W, x + rw), y1 = Math.min(H, y + rh);
+      return [x0, y0, x1 - x0, y1 - y0];
+    }).filter((r) => r[2] > 0 && r[3] > 0);
+    return { res: [W, H], rects: clipped, color: COLORS[S.colorIdx] };
+  };
+
+  const send = (pattern) => {
+    if (S.projWin && !S.projWin.closed) S.projWin.postMessage({ type: 'pattern', pattern }, '*');
+  };
+
+  // ---------------- UI ----------------
+  const fmtPx = (p) => (p ? `${Math.floor(p[0])}, ${Math.floor(p[1])}` : '—');
+
+  const drawPreview = (pattern) => {
+    const cv = $('preview'), ctx = cv.getContext('2d');
+    const [W, H] = S.rig.res;
+    const k = cv.width / W;
+    const X = (u) => u * k, Y = (v) => (H - v) * k;
+    ctx.fillStyle = '#000'; ctx.fillRect(0, 0, cv.width, cv.height);
+    ctx.strokeStyle = '#333'; ctx.strokeRect(0.5, 0.5, cv.width - 1, cv.height - 1);
+    for (const f of S.fids) {
+      const cur = S.fids[S.current] === f;
+      ctx.strokeStyle = cur ? '#aaa' : '#555';
+      const dx = X(f.pixel[0] + 0.5), dy = Y(f.pixel[1] + 0.5);
+      ctx.beginPath(); ctx.moveTo(dx - 4, dy); ctx.lineTo(dx + 4, dy); ctx.moveTo(dx, dy - 4); ctx.lineTo(dx, dy + 4); ctx.stroke();
+      const p = predicted(f);
+      if (p) { ctx.strokeStyle = cur ? '#4fc3f7' : '#2b6a87'; ctx.beginPath(); ctx.arc(X(p[0]), Y(p[1]), cur ? 6 : 4, 0, 7); ctx.stroke(); }
+      const r = S.readings[f.id];
+      if (r) { ctx.fillStyle = '#3ddc84'; ctx.beginPath(); ctx.arc(X(r[0] + 0.5), Y(r[1] + 0.5), 3, 0, 7); ctx.fill(); }
+    }
+    ctx.fillStyle = pattern.color;
+    for (const [u0, v0, w, h] of pattern.rects) {
+      ctx.fillRect(X(u0), Y(v0 + h), Math.max(1, w * k), Math.max(1, h * k));
+    }
+  };
+
+  const fitText = () => {
+    if (!S.result) return 'Record at least one fiducial.';
+    const n = Object.keys(S.readings).length;
+    const lines = A.describe(S.rig, S.result);
+    if (n < 3) lines.unshift(`Only ${n} reading(s): predictions are approximate, keep going.`);
+    return lines.join('\n');
+  };
+
+  const buildParamBoxes = () => {
+    const box = $('paramBoxes');
+    box.innerHTML = '';
+    for (const p of A.PARAMS) {
+      const lab = document.createElement('label');
+      const cb = document.createElement('input');
+      cb.type = 'checkbox'; cb.checked = S.free.has(p.key);
+      cb.addEventListener('change', () => {
+        if (cb.checked) S.free.add(p.key); else S.free.delete(p.key);
+        solveNow(); update();
+      });
+      lab.append(cb, ' ' + p.label);
+      lab.title = `${p.key}, prior ±${p.prior} ${p.unit}`;
+      box.append(lab);
+    }
+  };
+
+  const update = () => {
+    if (!S.rig) return;
+    const f = S.fids[S.current];
+    const p = predicted(f);
+    const r = S.readings[f.id];
+    $('curInfo').innerHTML = [
+      ['Fiducial', `#${f.id} ${f.label} (${f.depth_frac < 0.5 ? 'FRONT' : 'BACK'} of glass)`],
+      ['Design pixel', `${f.pixel[0]}, ${f.pixel[1]}`],
+      ['Predicted', fmtPx(p)],
+      ['Cursor', `<b>${S.cursor[0]}, ${S.cursor[1]}</b>`],
+      ['Recorded', r ? `<span class="ok">${r[0]}, ${r[1]}</span>` : '<span class="muted">—</span>'],
+      ['Pattern', S.blank ? 'blank' : S.all ? 'verify: all predicted fiducials' : `${MODE_NAMES[S.mode]}, width ${S.width}, half-length ${S.len}`],
+      ['Progress', `${Object.keys(S.readings).length} / ${S.fids.length} recorded`],
+    ].map(([k, v]) => `<span class="muted">${k}</span><span>${v}</span>`).join('');
+
+    const res = S.result;
+    const resid = {};
+    if (res) {
+      const recorded = S.fids.filter((x) => S.readings[x.id]);
+      recorded.forEach((x, i) => { resid[x.id] = res.residuals[i]; });
+    }
+    $('fidTable').innerHTML = '<tr><th>#</th><th>depth</th><th>design</th><th>predicted</th><th>measured</th><th>resid px</th></tr>' +
+      S.fids.map((x, i) => {
+        const rr = resid[x.id];
+        const e = rr ? Math.hypot(rr[0], rr[1]) : null;
+        const cls = e === null ? '' : e < 1 ? 'ok' : e < 2 ? 'warn' : 'bad';
+        return `<tr data-i="${i}" class="${i === S.current ? 'current' : ''}"><td>${x.id} ${x.label}</td><td>${x.depth_frac < 0.5 ? 'front' : 'back'}</td>` +
+          `<td>${x.pixel[0]}, ${x.pixel[1]}</td><td>${fmtPx(predicted(x))}</td>` +
+          `<td>${S.readings[x.id] ? S.readings[x.id].join(', ') : '—'}</td><td class="${cls}">${e === null ? '' : e.toFixed(2)}</td></tr>`;
+      }).join('');
+    $('fitOut').textContent = fitText();
+    $('fitOut').className = res ? '' : 'muted';
+
+    const pattern = buildPattern();
+    drawPreview(pattern);
+    send(pattern);
+  };
+
+  $('fidTable').addEventListener('click', (e) => {
+    const tr = e.target.closest('tr[data-i]');
+    if (tr) goTo(+tr.dataset.i);
+  });
+
+  // ---------------- keys ----------------
+  const handleKey = (key, shift) => {
+    if (!S.rig) return false;
+    const step = shift ? 10 : 1;
+    switch (key) {
+      case 'ArrowLeft': S.cursor[0] -= step; break;
+      case 'ArrowRight': S.cursor[0] += step; break;
+      case 'ArrowUp': S.cursor[1] += step; break;
+      case 'ArrowDown': S.cursor[1] -= step; break;
+      case ' ': S.mode = MODES[(MODES.indexOf(S.mode) + 1) % MODES.length]; S.all = false; S.blank = false; break;
+      case 'Enter': record(); return true;
+      case 'n': case 'N': goTo(S.current + 1); return true;
+      case 'p': case 'P': goTo(S.current - 1); return true;
+      case 'x': case 'X': delete S.readings[S.fids[S.current].id]; solveNow(); break;
+      case 'a': case 'A': S.all = !S.all; S.blank = false; break;
+      case 'b': case 'B': S.blank = !S.blank; break;
+      case 'c': case 'C': S.colorIdx = (S.colorIdx + 1) % COLORS.length; break;
+      case '[': S.len = Math.max(2, Math.round(S.len / 1.5)); break;
+      case ']': S.len = Math.min(400, Math.round(S.len * 1.5)); break;
+      case ',': S.width = WIDTHS[Math.max(0, WIDTHS.indexOf(S.width) - 1)]; break;
+      case '.': S.width = WIDTHS[Math.min(WIDTHS.length - 1, WIDTHS.indexOf(S.width) + 1)]; break;
+      default: return false;
+    }
+    const [W, H] = S.rig.res;
+    S.cursor[0] = Math.min(W - 1, Math.max(0, S.cursor[0]));
+    S.cursor[1] = Math.min(H - 1, Math.max(0, S.cursor[1]));
+    update();
+    return true;
+  };
+  window.addEventListener('keydown', (e) => {
+    if (e.target.tagName === 'INPUT') return;
+    if (handleKey(e.key, e.shiftKey)) e.preventDefault();
+  });
+
+  // ---------------- projector window ----------------
+  $('openProj').addEventListener('click', () => {
+    const [W, H] = S.rig.res;
+    S.projWin = window.open(location.pathname + '?view=projector', 'projector_output', `width=${W},height=${H}`);
+    if (!S.projWin) alert('Pop-up blocked: allow pop-ups for this page.');
+  });
+  window.addEventListener('message', (e) => {
+    const d = e.data || {};
+    if (d.type === 'key') handleKey(d.key, d.shift);
+    else if (d.type === 'hello') update();
+    else if (d.type === 'size') {
+      const [W, H] = S.rig.res;
+      const good = d.w === W && d.h === H;
+      $('projStatus').className = good ? 'ok' : 'warn';
+      $('projStatus').textContent = good
+        ? `Projector window ${d.w}x${d.h} device px: 1:1 pixel mapping OK`
+        : `Projector window is ${d.w}x${d.h} device px (dpr ${d.dpr}), need ${W}x${H}: drag it to the projector and press F`;
+    }
+  });
+
+  // ---------------- export ----------------
+  $('exportBtn').addEventListener('click', () => {
+    const res = S.result;
+    const recorded = S.fids.filter((x) => S.readings[x.id]);
+    const out = {
+      type: 'projector_alignment_result',
+      version: 1,
+      created: new Date().toISOString(),
+      free: res.free,
+      params: res.params,
+      sigma: res.sigma,
+      rms_px: res.rms,
+      solved: A.solvedRig(S.rig, res.params),
+      readings: recorded.map((x, i) => ({
+        id: x.id, label: x.label, design_pixel: x.pixel,
+        measured_pixel: S.readings[x.id], residual_px: res.residuals[i],
+      })),
+      diagnosis: A.describe(S.rig, res),
+      design: S.design,
+    };
+    const blob = new Blob([JSON.stringify(out, null, 2)], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'alignment_result.json';
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  });
+
+  $('resetBtn').addEventListener('click', () => {
+    if (!confirm('Clear all readings?')) return;
+    S.readings = {}; solveNow(); goTo(0);
+  });
+
+  window.__alignment = { S, loadJson, handleKey };  // for automated tests
+}
+</script>
+</body>
+</html>

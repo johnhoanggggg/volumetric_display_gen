@@ -579,12 +579,16 @@ def get_projector_pixel_bounds(cam_hfov, cam_vfov):
 def proj_to_cam(proj_px, proj_py, px_left, px_right, py_top, py_bottom):
     """Convert projector pixel coordinates to camera pixel coordinates.
 
-    Projector pixel (0, 0) maps to camera pixel (px_left, py_top).
-    Projector pixel (RES_X-1, RES_Y-1) maps to (px_right, py_bottom).
+    Projector pixel (0, 0) is the BOTTOM-left pixel (rows count up, as in
+    the tracer and in Blender images); its centre sits half a projector
+    pixel in from camera edge (px_left, py_top).
     Accepts float inputs for sub-pixel addressing.
     """
-    cam_x = px_left + (px_right - px_left) * proj_px / (RES_X - 1)
-    cam_y = py_top + (py_bottom - py_top) * proj_py / (RES_Y - 1)
+    # Pixel k is centred at (k + 0.5) / RES of the projector span; the
+    # tracer adds the 0.5 back.  (Spreading over RES - 1 drifted rays up
+    # to half a pixel from the image pixel that is meant to light them.)
+    cam_x = px_left + (px_right - px_left) * (proj_px + 0.5) / RES_X - 0.5
+    cam_y = py_top + (py_bottom - py_top) * (proj_py + 0.5) / RES_Y - 0.5
     return cam_x, cam_y
 
 # -------------------------------------------------------------------
@@ -1441,9 +1445,9 @@ def generate_calib_verify_image(trace, vol_mapping):
         else:
             ppx, ppy = key_str
         if 0 <= ppx < RES_X and 0 <= ppy < RES_Y:
-            # PNG pixel (0,0) is bottom-left; projector pixel (0,0) is top-left
-            flipped_y = (RES_Y - 1) - ppy
-            idx = (flipped_y * RES_X + ppx) * 4
+            # Blender image rows start at the bottom, like projector rows
+            row = ppy
+            idx = (row * RES_X + ppx) * 4
             pixels[idx]     = 1.0
             pixels[idx + 1] = 1.0
             pixels[idx + 2] = 1.0
@@ -1454,14 +1458,14 @@ def generate_calib_verify_image(trace, vol_mapping):
     inset = ALIGNMENT_INSET_PX
     for ppx in range(inset, RES_X - inset, BORDER_PIXEL_STEP):
         for ppy in [inset, RES_Y - 1 - inset]:
-            flipped_y = (RES_Y - 1) - ppy
-            idx = (flipped_y * RES_X + ppx) * 4
+            row = ppy
+            idx = (row * RES_X + ppx) * 4
             pixels[idx] = 0.0; pixels[idx+1] = 0.5; pixels[idx+2] = 1.0
             active_count += 1
     for ppy in range(inset, RES_Y - inset, BORDER_PIXEL_STEP):
         for ppx in [inset, RES_X - 1 - inset]:
-            flipped_y = (RES_Y - 1) - ppy
-            idx = (flipped_y * RES_X + ppx) * 4
+            row = ppy
+            idx = (row * RES_X + ppx) * 4
             pixels[idx] = 0.0; pixels[idx+1] = 0.5; pixels[idx+2] = 1.0
             active_count += 1
 
@@ -1472,8 +1476,8 @@ def generate_calib_verify_image(trace, vol_mapping):
                 gx = int(RES_X * col / GRID_COLS)
                 gy = int(RES_Y * row / GRID_ROWS)
                 if 0 <= gx < RES_X and 0 <= gy < RES_Y:
-                    flipped_y = (RES_Y - 1) - gy
-                    idx = (flipped_y * RES_X + gx) * 4
+                    row = gy
+                    idx = (row * RES_X + gx) * 4
                     pixels[idx] = 1.0
                     pixels[idx+1] = 1.0
                     pixels[idx+2] = 0.0

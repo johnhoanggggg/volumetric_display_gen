@@ -256,8 +256,11 @@ def get_projector_pixel_bounds(cam_hfov, cam_vfov):
     return px_left, px_right, py_top, py_bottom
 
 def proj_to_cam(proj_px, proj_py, px_left, px_right, py_top, py_bottom):
-    cam_x = px_left + (px_right - px_left) * proj_px / (RES_X - 1)
-    cam_y = py_top + (py_bottom - py_top) * proj_py / (RES_Y - 1)
+    # Pixel k is centred at (k + 0.5) / RES of the projector span; the
+    # tracer adds the 0.5 back.  (Spreading over RES - 1 drifted rays up
+    # to half a pixel from the image pixel that is meant to light them.)
+    cam_x = px_left + (px_right - px_left) * (proj_px + 0.5) / RES_X - 0.5
+    cam_y = py_top + (py_bottom - py_top) * (proj_py + 0.5) / RES_Y - 0.5
     return cam_x, cam_y
 
 # -------------------------------------------------------------------
@@ -505,9 +508,10 @@ def generate_projector_image():
                 hit_world, normal_world, shade = hit
                 hit_count += 1
 
-                # Set pixel in image (flip Y for PNG bottom-left origin)
-                flipped_y = (RES_Y - 1) - proj_py
-                idx = (flipped_y * RES_X + proj_px) * 4
+                # Blender image rows start at the bottom, like projector
+                # rows, so no flip
+                row = proj_py
+                idx = (row * RES_X + proj_px) * 4
                 pixels[idx]     = shade
                 pixels[idx + 1] = shade
                 pixels[idx + 2] = shade
